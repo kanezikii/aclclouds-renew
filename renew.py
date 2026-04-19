@@ -40,13 +40,13 @@ def run(playwright):
         print("截图保存成功: debug_page.png")
 
         # 放宽查找条件，只要包含 Renew 文本的元素都找出来
-        renew_buttons = page.locator("text='Renew'")
+        renew_buttons = page.locator("text='Renouveler'")
         count = renew_buttons.count()
 
         if count == 0:
             print("未找到 'Renew' 按钮。请查看下载的截图确认当前页面状态。")
         else:
-            print(f"找到 {count} 个 'Renew' 元素，准备点击...")
+            print(f"找到 {count} 个 'Renouveler' 元素，准备点击...")
             for i in range(count):
                 button = renew_buttons.nth(i)
                 if button.is_visible():
