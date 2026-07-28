@@ -93,67 +93,36 @@ jobs:
       - name: 🚀 Run Renew Script
 
         env:
-
           ACL_COOKIE: ${{ secrets.ACL_COOKIE }}
-
           EMAIL: ${{ secrets.EMAIL }}
-
           PASSWORD: ${{ secrets.PASSWORD }}
-
-
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-
-
-          IS_PROXY: ${{ secrets.IS_PROXY }}
-
-          S5_PROXY: ${{ secrets.S5_PROXY }}
-
-
-
+          
           # 自动更新GitHub Secret
-
           GH_PAT: ${{ secrets.GH_PAT }}
-
           GH_OWNER: ${{ secrets.GH_OWNER }}
-
           GH_REPO: ${{ secrets.GH_REPO }}
 
-
-
         run: |
-
           xvfb-run \
             --auto-servernum \
             --server-args="-screen 0 1366x768x24" \
             python3 renew.py
 
-
-
-
-
       - name: 🧹 Cleanup Old Workflow Runs
-
         if: always()
-
         env:
-
           GH_TOKEN: ${{ github.token }}
 
-
         run: |
-
-
           runs=$(gh run list \
             --workflow="${{ github.workflow }}" \
             --limit=100 \
             --json databaseId \
             --jq '.[].databaseId')
-
-
+            
           count=0
-
 
           for run_id in $runs
 
