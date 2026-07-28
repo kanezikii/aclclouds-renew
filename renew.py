@@ -227,9 +227,9 @@ def login_by_cookie(sb):
         if is_logged_in(sb):
             print("✅ Cookie登录成功")
             try:
-               save_new_cookie(sb)
-           except Exception as e:
-               print(f"保存Cookie失败（可忽略）: {e}")
+                save_new_cookie(sb)
+            except Exception as e:
+                print(f"保存Cookie失败（可忽略）: {e}")
             return True
 
         sb.refresh()
