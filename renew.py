@@ -76,8 +76,29 @@ def build_cookie_string(cookies):
             result.append(f"{name}={value}")
     return "; ".join(result)
 
-
 def extract_acl_cookie(sb):
+    """优先使用 CDP 获取 Cookie，失败再降级到 driver.get_cookies()"""
+    try:
+        # 方法1：CDP（更稳定）
+        result = sb.execute_cdp_cmd("Network.getAllCookies", {})
+        cookies = result.get("cookies", [])
+        keep = []
+        for c in cookies:
+            name = c.get("name", "")
+            if (
+                name == "XSRF-TOKEN"
+                or name.startswith("remember_web_")
+                or name == "__Host-aclclouds_session"
+                or name == "aclclouds_session"
+                or name.startswith("__Host-aclclouds")
+            ):
+                keep.append({"name": name, "value": c.get("value", "")})
+        if keep:
+            return build_cookie_string(keep)
+    except Exception as e:
+        print(f"CDP获取Cookie失败: {e}")
+
+    # 方法2：普通方式
     try:
         cookies = sb.driver.get_cookies()
         keep = []
@@ -93,7 +114,7 @@ def extract_acl_cookie(sb):
                 keep.append(c)
         return build_cookie_string(keep)
     except Exception as e:
-        print(f"提取Cookie失败: {e}")
+        print(f"driver.get_cookies失败: {e}")
         return ""
 
 
