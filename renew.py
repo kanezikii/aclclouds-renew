@@ -308,11 +308,34 @@ def find_project_cards(sb):
         try:
             for card in sb.driver.find_elements(By.CSS_SELECTOR, selector):
                 text = element_text(card).lower()
-                if any(k in text for k in ["renew", "reactivate", "expiry", "expire", "valid", "到期", "续期", "expire dans", "renouvellement"]):
+                if any(k in text for k in [
+                    "renew", "reactivate", "expiry", "expire", "valid",
+                    "到期", "续期", "expire dans", "renouvellement", "expires in"
+                ]):
                     cards.append(card)
         except Exception:
             continue
-    return unique_elements(cards)
+
+    # ---------- 去重逻辑 ----------
+    unique_cards = []
+    seen_signatures = set()
+
+    for card in unique_elements(cards):
+        name = get_project_name(card, 0).lower().strip()
+        expiry = get_project_expiry(card).lower().strip()
+        signature = (name, expiry)
+
+        # 过滤掉太短的无效卡片
+        if len(element_text(card)) < 15:
+            continue
+
+        if signature in seen_signatures:
+            continue
+
+        seen_signatures.add(signature)
+        unique_cards.append(card)
+
+    return unique_cards
 
 
 def extract_duration_like(text):
