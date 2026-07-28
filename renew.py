@@ -9,11 +9,6 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from seleniumbase import SB
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import (
-    ElementClickInterceptedException,
-    WebDriverException,
-    StaleElementReferenceException,
-)
 
 EMAIL = os.getenv("EMAIL") or ""
 PASSWORD = os.getenv("PASSWORD") or ""
@@ -31,7 +26,6 @@ GH_OWNER = os.getenv("GH_OWNER") or ""
 GH_REPO = os.getenv("GH_REPO") or ""
 GH_SECRET_NAME = "ACL_COOKIE"
 
-# 已更新为正式域名
 BASE_URL = "https://aclclouds.com"
 LOGIN_PATH = "/auth/login"
 LOGIN_URL = f"{BASE_URL}{LOGIN_PATH}"
@@ -81,7 +75,6 @@ def build_cookie_string(cookies):
 
 
 def extract_acl_cookie(sb):
-    """提取关键登录 Cookie（适配新域名和新名称）"""
     cookies = sb.driver.get_cookies()
     keep = []
     for c in cookies:
@@ -147,7 +140,7 @@ def save_new_cookie(sb):
         print("没有获取到Cookie")
         return False
     print("最新Cookie:")
-    print(cookie[:150] + "..." if len(cookie) > 150 else cookie)
+    print(cookie[:180] + "..." if len(cookie) > 180 else cookie)
     update_github_secret(GH_SECRET_NAME, cookie)
     send_telegram(f"🍪 ACLClouds Cookie 已自动更新\n时间:{beijing_time_str()}")
     return True
@@ -159,7 +152,8 @@ def is_logged_in(sb):
         if BASE_URL not in url or LOGIN_PATH in url:
             return False
         body = sb.get_page_source().lower()
-        if any(x in body for x in ["dashboard", "projects", "logout", "sign out", "déconnexion", "我的服务"]):
+        # 中文界面特征
+        if any(x in body for x in ["我的服务", "dashboard", "projects", "logout", "déconnexion", "sign out"]):
             return True
         return True
     except Exception:
@@ -170,7 +164,7 @@ def debug_page_info(sb, label=""):
     try:
         print(f"[{label}] 当前URL: {sb.get_current_url()}")
         print(f"[{label}] 标题: {sb.get_title()}")
-        body = sb.get_text("body")[:600].replace("\n", " ")
+        body = sb.get_text("body")[:700].replace("\n", " ")
         print(f"[{label}] Body片段: {body}")
     except Exception as e:
         print(f"调试信息获取失败: {e}")
@@ -183,48 +177,81 @@ def login_by_cookie(sb):
 
     print("尝试Cookie登录...")
     try:
+        # 打开登录页
         sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=5)
         sb.sleep(2)
 
+        # 清空旧 Cookie
+        sb.driver.delete_all_cookies()
+        sb.sleep(1)
+
         cookies = parse_cookie_string(ACL_COOKIE)
+        print(f"准备写入 {len(cookies)} 个Cookie")
+
         for name, value in cookies.items():
             try:
-                cookie_dict = {
+                params = {
                     "name": name,
                     "value": value,
                     "path": "/",
                     "secure": True,
                 }
-                # __Host- 前缀的 Cookie 绝对不能设置 domain
+                # __Host- 前缀绝对不能设置 domain
                 if not name.startswith("__Host-"):
-                    cookie_dict["domain"] = "aclclouds.com"
+                    params["domain"] = "aclclouds.com"
 
-                sb.driver.add_cookie(cookie_dict)
-                print(f"写入Cookie: {name}")
+                # 优先使用 CDP（更可靠）
+                sb.execute_cdp_cmd("Network.setCookie", params)
+                print(f"写入Cookie (CDP): {name}")
             except Exception as e:
-                print(f"Cookie写入失败 {name}: {e}")
+                print(f"CDP失败 {name}: {e}")
+                try:
+                    # 降级普通方式
+                    cookie_dict = {
+                        "name": name,
+                        "value": value,
+                        "path": "/",
+                        "secure": True,
+                    }
+                    if not name.startswith("__Host-"):
+                        cookie_dict["domain"] = "aclclouds.com"
+                    sb.driver.add_cookie(cookie_dict)
+                    print(f"写入Cookie (普通): {name}")
+                except Exception as e2:
+                    print(f"普通方式也失败 {name}: {e2}")
 
-        sb.refresh()
-        sb.sleep(6)
+        # 直接跳转项目页验证（关键！）
+        print("直接访问项目页验证登录状态...")
+        sb.open(PROJECTS_URL)
+        sb.sleep(8)
 
         if is_logged_in(sb):
-            print("Cookie登录成功")
+            print("✅ Cookie登录成功")
+            save_new_cookie(sb)
+            return True
+
+        # 再刷新一次
+        sb.refresh()
+        sb.sleep(5)
+        if is_logged_in(sb):
+            print("✅ Cookie登录成功（刷新后）")
             save_new_cookie(sb)
             return True
 
         print("Cookie登录失败")
         debug_page_info(sb, "Cookie失败后")
         return False
+
     except Exception as e:
         print(f"Cookie登录异常: {e}")
         return False
 
 
 def login_acl(sb):
-    """只使用 Cookie 登录（密码登录已失效）"""
+    """只走 Cookie 登录"""
     if login_by_cookie(sb):
         return True
-    print("Cookie登录失败，密码登录已禁用（站点强制 Google 登录）")
+    print("Cookie登录失败（密码登录已禁用）")
     return False
 
 
@@ -261,8 +288,7 @@ def element_text(element):
 
 
 def unique_elements(elements):
-    result = []
-    seen = set()
+    result, seen = [], set()
     for e in elements:
         try:
             eid = e.id
@@ -297,20 +323,14 @@ def find_renew_buttons(root):
 
 
 def find_project_cards(sb):
-    selectors = [
-        ".projects-card",
-        "[class*=project]",
-        "[class*=card]",
-        "article",
-        "[class*=service]",
-    ]
+    selectors = [".projects-card", "[class*=project]", "[class*=card]", "article", "[class*=service]"]
     cards = []
     for selector in selectors:
         try:
             items = sb.driver.find_elements(By.CSS_SELECTOR, selector)
             for item in items:
                 txt = element_text(item).lower()
-                if any(x in txt for x in ["renew", "reactivate", "expiry", "expire", "valid", "到期", "续期", "续订", "天"]):
+                if any(x in txt for x in ["renew", "reactivate", "expiry", "expire", "valid", "到期", "续期", "续订", "天", "小时"]):
                     cards.append(item)
         except Exception:
             pass
@@ -318,8 +338,7 @@ def find_project_cards(sb):
 
 
 def get_project_name(card, index):
-    selectors = ["h1", "h2", "h3", "[class*=title]", "[class*=name]", "strong"]
-    for selector in selectors:
+    for selector in ["h1", "h2", "h3", "[class*=title]", "[class*=name]", "strong"]:
         try:
             for e in card.find_elements(By.CSS_SELECTOR, selector):
                 txt = element_text(e)
@@ -332,22 +351,11 @@ def get_project_name(card, index):
 
 def get_project_expiry(card):
     text = element_text(card)
-    patterns = [
-        r"\d{4}[-/]\d{1,2}[-/]\d{1,2}",
-        r"\d+\s*(day|days|天|小时)",
-    ]
-    for p in patterns:
+    for p in [r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", r"\d+\s*(day|days|天|小时)"]:
         m = re.search(p, text, re.I)
         if m:
             return m.group(0)
     return "未知"
-
-
-def get_action_label(button):
-    txt = element_text(button).lower()
-    if "reactivate" in txt:
-        return "Reactivate"
-    return "Renew"
 
 
 def wait_renew_result(sb, timeout=25):
@@ -361,21 +369,6 @@ def wait_renew_result(sb, timeout=25):
             pass
         sb.sleep(2)
     return False
-
-
-def build_success_message(name, expiry):
-    return f"""🇫🇷 ACLClouds续期通知
-✅ 续期成功
-项目: {name}
-新到期: {expiry}
-时间: {beijing_time_str()}""".strip()
-
-
-def build_fail_message(name):
-    return f"""🇫🇷 ACLClouds续期通知
-❌ 续期失败
-项目: {name}
-时间: {beijing_time_str()}""".strip()
 
 
 def renew_projects(sb):
@@ -404,14 +397,11 @@ def renew_projects(sb):
                 continue
 
             btn = buttons[0]
-            action = get_action_label(btn)
-            print(f"{name} 点击 {action}")
-
+            print(f"{name} 点击续期")
             safe_click_element(sb, btn, name)
             sb.sleep(5)
 
             if wait_renew_result(sb):
-                # 重新获取到期时间
                 new_expiry = expiry
                 try:
                     new_cards = find_project_cards(sb)
@@ -419,9 +409,16 @@ def renew_projects(sb):
                         new_expiry = get_project_expiry(new_cards[index - 1])
                 except Exception:
                     pass
-                send_telegram(build_success_message(name, new_expiry))
+                send_telegram(f"""🇫🇷 ACLClouds续期通知
+✅ 续期成功
+项目: {name}
+新到期: {new_expiry}
+时间: {beijing_time_str()}""")
             else:
-                send_telegram(build_fail_message(name))
+                send_telegram(f"""🇫🇷 ACLClouds续期通知
+❌ 续期失败
+项目: {name}
+时间: {beijing_time_str()}""")
         except Exception as e:
             print("处理失败:", e)
             send_telegram(f"⚠️ {name}异常:{e}")
@@ -443,7 +440,6 @@ def main():
     with SB(**sb_options) as sb:
         try:
             sb.set_window_size(1366, 768)
-
             ip = get_current_ip(PROXY_SERVER if IS_PROXY else "")
             print("当前出口IP:", ip)
 
@@ -452,8 +448,9 @@ def main():
                 print("登录失败")
                 send_telegram("""⚠️ ACLClouds登录失败
 请检查:
-1. Cookie 是否过期（建议重新用 Google 登录后更新 ACL_COOKIE）
-2. 代理是否正常
+1. Cookie 是否过期（必须用代理 + Google 重新登录后更新）
+2. 是否缺少 remember_web_ Cookie
+3. 代理是否正常
 """.strip())
                 debug_page_info(sb, "最终登录失败")
                 return
