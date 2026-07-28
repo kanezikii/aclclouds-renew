@@ -165,15 +165,15 @@ def save_new_cookie(sb):
         print("最新Cookie:")
         print(cookie[:180] + "..." if len(cookie) > 180 else cookie)
 
-        # 更新 GitHub Secret
         success = update_github_secret(GH_SECRET_NAME, cookie)
         if success:
-            send_telegram(f"🍪 ACLClouds Cookie 已自动更新\n时间:{beijing_time_str()}")
+            print("✅ Github Secret 更新成功")
+        else:
+            print("❌ Github Secret 更新失败")
         return success
     except Exception as e:
-        print(f"保存Cookie时发生异常（已忽略）: {e}")
+        print(f"保存Cookie时发生异常: {e}")
         return False
-
 
 def is_logged_in(sb):
     try:
@@ -495,20 +495,23 @@ def main():
                 send_telegram("⚠️ ACLClouds Cookie登录失败，请更新 ACL_COOKIE")
                 return
 
+                        # 登录成功后尝试保存 Cookie
+            cookie_updated = False
             try:
-                save_new_cookie(sb)
+                cookie_updated = save_new_cookie(sb)
             except Exception as e:
-                print(f"二次保存Cookie失败（可忽略）: {e}")
+                print(f"保存Cookie失败: {e}")
 
-                        # 执行续期并收集结果
+            # 执行续期并收集结果
             renew_results = renew_projects(sb)
 
             # 统一发送一条汇总通知
+            cookie_status = "✅ 更新成功" if cookie_updated else "❌ 更新失败"
             summary_lines = [
                 "🇫🇷 ACLClouds 自动任务汇总",
                 f"时间: {beijing_time_str()}",
                 "",
-                "🍪 Cookie 状态: 已尝试更新（见上方日志）",
+                f"🍪 Cookie 状态: {cookie_status}",
                 "",
             ]
             if renew_results:
