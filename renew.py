@@ -303,36 +303,35 @@ def find_project_cards(sb):
         "article",
         '[class*="card"]',
     ]
-    cards = []
+    raw_cards = []
     for selector in candidate_selectors:
         try:
             for card in sb.driver.find_elements(By.CSS_SELECTOR, selector):
                 text = element_text(card).lower()
-                if any(k in text for k in [
-                    "renew", "reactivate", "expiry", "expire", "valid",
-                    "到期", "续期", "expire dans", "renouvellement", "expires in"
-                ]):
-                    cards.append(card)
+                # 必须同时包含项目名特征 + 到期信息才认为是有效卡片
+                has_expiry = any(k in text for k in ["expire", "expires", "到期", "expire dans", "expires in", "剩余"])
+                has_name_hint = any(k in text for k in ["node", "bot", "vps", "minecraft", "renqi", "人气", "服务"])
+                if has_expiry and (has_name_hint or len(text) > 40):
+                    raw_cards.append(card)
         except Exception:
             continue
 
-    # ---------- 去重逻辑 ----------
     unique_cards = []
-    seen_signatures = set()
-
-    for card in unique_elements(cards):
+    seen = set()
+    for card in unique_elements(raw_cards):
         name = get_project_name(card, 0).lower().strip()
         expiry = get_project_expiry(card).lower().strip()
+
+        # 过滤掉明显不是项目名的
+        if name in ["expires in", "expire dans", "ram", "stockage", "内存", "贮存", "未知", ""]:
+            continue
+        if len(name) < 2:
+            continue
+
         signature = (name, expiry)
-
-        # 过滤掉太短的无效卡片
-        if len(element_text(card)) < 15:
+        if signature in seen:
             continue
-
-        if signature in seen_signatures:
-            continue
-
-        seen_signatures.add(signature)
+        seen.add(signature)
         unique_cards.append(card)
 
     return unique_cards
@@ -348,7 +347,6 @@ def extract_duration_like(text):
     if match:
         return match.group(0).strip()
     return ""
-
 
 def get_project_name(card, idx):
     for selector in [".projects-card-title", "h1", "h2", "h3", "h4", "[class*=title]", "[class*=name]", "strong"]:
@@ -429,41 +427,40 @@ def renew_projects(sb):
     sb.sleep(5)
 
     cards = find_project_cards(sb)
+    results = []  # 收集所有项目结果
+
     if not cards:
         print("没有找到项目")
-        send_telegram("⚠️ ACLClouds未找到项目")
-        return
+        results.append("⚠️ 未找到任何项目")
+    else:
+        print(f"发现 {len(cards)} 个项目")
+        for idx, card in enumerate(cards, 1):
+            try:
+                name = get_project_name(card, idx)
+                expiry = get_project_expiry(card)
+                note = get_renewal_available_note(card)
+                print(f"[{name}] 当前过期: {expiry}")
 
-    print(f"发现 {len(cards)} 个项目")
-    for idx, card in enumerate(cards, 1):
-        try:
-            name = get_project_name(card, idx)
-            expiry = get_project_expiry(card)
-            note = get_renewal_available_note(card)
-            print(f"[{name}] 当前过期: {expiry}")
+                buttons = find_renew_buttons(card)
+                if not buttons:
+                    status = f"⏳ 未到续期时间\n提示: {note or '按钮不存在'}"
+                    results.append(f"项目: {name}\n当前过期: {expiry}\n{status}")
+                    continue
 
-            buttons = find_renew_buttons(card)
-            if not buttons:
-                msg = f"🇫🇷 ACLClouds续期通知\n\n⏳ 未到续期时间\n项目: {name}\n当前过期: {expiry}\n提示: {note or '按钮不存在'}\n时间: {beijing_time_str()}"
-                print(msg)
-                send_telegram(msg)
-                continue
+                print(f"[{name}] 点击续期")
+                safe_click_element(sb, buttons[0], name)
+                sb.sleep(4)
 
-            print(f"[{name}] 点击续期")
-            safe_click_element(sb, buttons[0], name)
-            sb.sleep(4)
+                success, status = wait_for_renew_result(sb)
+                if success:
+                    new_expiry = get_project_expiry(card)
+                    results.append(f"项目: {name}\n✅ 续期成功\n新到期: {new_expiry}")
+                else:
+                    results.append(f"项目: {name}\n❌ 续期失败/未确认\n当前过期: {expiry}\n状态: {status}")
+            except Exception as e:
+                results.append(f"项目处理异常: {e}")
 
-            success, status = wait_for_renew_result(sb)
-            if success:
-                new_expiry = get_project_expiry(card)
-                msg = f"🇫🇷 ACLClouds续期通知\n\n✅ 续期成功\n项目: {name}\n新到期: {new_expiry}\n时间: {beijing_time_str()}"
-                send_telegram(msg)
-            else:
-                msg = f"🇫🇷 ACLClouds续期通知\n\n❌ 续期失败/未确认\n项目: {name}\n当前过期: {expiry}\n状态: {status}\n时间: {beijing_time_str()}"
-                send_telegram(msg)
-        except Exception as e:
-            print(f"处理失败: {e}")
-            send_telegram(f"⚠️ {name}异常: {e}")
+    return results  # 返回结果列表，由 main 统一发送
 
 
 def get_current_ip(proxy_server=""):
@@ -503,9 +500,28 @@ def main():
             except Exception as e:
                 print(f"二次保存Cookie失败（可忽略）: {e}")
 
-            renew_projects(sb)
+                        # 执行续期并收集结果
+            renew_results = renew_projects(sb)
+
+            # 统一发送一条汇总通知
+            summary_lines = [
+                "🇫🇷 ACLClouds 自动任务汇总",
+                f"时间: {beijing_time_str()}",
+                "",
+                "🍪 Cookie 状态: 已尝试更新（见上方日志）",
+                "",
+            ]
+            if renew_results:
+                summary_lines.append("📋 项目结果:")
+                summary_lines.extend(renew_results)
+            else:
+                summary_lines.append("未发现可处理的项目")
+
+            summary_lines.append("")
+            summary_lines.append("✅ 任务执行完毕")
+
+            send_telegram("\n".join(summary_lines))
             print("全部任务完成")
-            send_telegram(f"✅ ACLClouds自动任务完成\n时间:\n{beijing_time_str()}")
         except Exception as e:
             print("程序异常:", e)
             send_telegram(f"❌ ACLClouds脚本异常\n{str(e)}\n时间:\n{beijing_time_str()}")
