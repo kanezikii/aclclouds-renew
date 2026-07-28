@@ -177,11 +177,11 @@ def login_by_cookie(sb):
 
     print("尝试Cookie登录...")
     try:
-        # 打开登录页
+        # 先打开登录页
         sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=5)
         sb.sleep(2)
 
-        # 清空旧 Cookie
+        # 清空所有旧 Cookie
         sb.driver.delete_all_cookies()
         sb.sleep(1)
 
@@ -190,23 +190,30 @@ def login_by_cookie(sb):
 
         for name, value in cookies.items():
             try:
-                params = {
-                    "name": name,
-                    "value": value,
-                    "path": "/",
-                    "secure": True,
-                }
-                # __Host- 前缀绝对不能设置 domain
-                if not name.startswith("__Host-"):
-                    params["domain"] = "aclclouds.com"
+                if name.startswith("__Host-"):
+                    # __Host- Cookie 必须使用 url 参数，不能设置 domain
+                    params = {
+                        "name": name,
+                        "value": value,
+                        "url": "https://aclclouds.com/",
+                        "path": "/",
+                        "secure": True,
+                    }
+                else:
+                    params = {
+                        "name": name,
+                        "value": value,
+                        "domain": "aclclouds.com",
+                        "path": "/",
+                        "secure": True,
+                    }
 
-                # 优先使用 CDP（更可靠）
                 sb.execute_cdp_cmd("Network.setCookie", params)
                 print(f"写入Cookie (CDP): {name}")
             except Exception as e:
                 print(f"CDP失败 {name}: {e}")
+                # 降级普通方式
                 try:
-                    # 降级普通方式
                     cookie_dict = {
                         "name": name,
                         "value": value,
@@ -220,7 +227,7 @@ def login_by_cookie(sb):
                 except Exception as e2:
                     print(f"普通方式也失败 {name}: {e2}")
 
-        # 直接跳转项目页验证（关键！）
+        # 直接跳转到项目页验证（最重要）
         print("直接访问项目页验证登录状态...")
         sb.open(PROJECTS_URL)
         sb.sleep(8)
@@ -230,7 +237,7 @@ def login_by_cookie(sb):
             save_new_cookie(sb)
             return True
 
-        # 再刷新一次
+        # 再刷新一次兜底
         sb.refresh()
         sb.sleep(5)
         if is_logged_in(sb):
