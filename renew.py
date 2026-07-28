@@ -159,14 +159,19 @@ def save_new_cookie(sb):
     try:
         cookie = extract_acl_cookie(sb)
         if not cookie:
-            print("没有获取到Cookie")
+            print("⚠️ 未能提取到有效Cookie，跳过更新")
             return False
-        print("最新Cookie:", cookie[:150] + "..." if len(cookie) > 150 else cookie)
-        update_github_secret(GH_SECRET_NAME, cookie)
-        send_telegram(f"🍪 ACLClouds Cookie 已自动更新\n时间:{beijing_time_str()}")
-        return True
+
+        print("最新Cookie:")
+        print(cookie[:180] + "..." if len(cookie) > 180 else cookie)
+
+        # 更新 GitHub Secret
+        success = update_github_secret(GH_SECRET_NAME, cookie)
+        if success:
+            send_telegram(f"🍪 ACLClouds Cookie 已自动更新\n时间:{beijing_time_str()}")
+        return success
     except Exception as e:
-        print(f"保存Cookie时异常（可忽略）: {e}")
+        print(f"保存Cookie时发生异常（已忽略）: {e}")
         return False
 
 
@@ -220,12 +225,12 @@ def login_by_cookie(sb):
         sb.sleep(8)
 
         if is_logged_in(sb):
-            print("✅ Cookie登录成功")
-            try:
-                save_new_cookie(sb)
-            except Exception as e:
-                print(f"保存Cookie失败（可忽略）: {e}")
-            return True
+    print("✅ Cookie登录成功")
+    try:
+        save_new_cookie(sb)
+    except Exception as e:
+        print(f"保存Cookie失败（可忽略）: {e}")
+    return True
 
         sb.refresh()
         sb.sleep(5)
