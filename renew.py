@@ -29,7 +29,7 @@ def run(playwright):
 
     try:
         print("正在访问项目面板...")
-        page.goto("https://dash.aclclouds.com/projects", timeout=60000)
+        page.goto("https://aclclouds.com/dashboard/projects", timeout=60000)
         
         # 强制等待 5 秒，确保前端 React/Vue 等框架把按钮渲染出来
         page.wait_for_timeout(5000)
