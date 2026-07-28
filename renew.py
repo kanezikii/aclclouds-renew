@@ -228,13 +228,17 @@ def login_by_cookie(sb):
                     print(f"普通方式也失败 {name}: {e2}")
 
         # 直接跳转到项目页验证（最重要）
+               # 直接跳转到项目页验证（最重要）
         print("直接访问项目页验证登录状态...")
         sb.open(PROJECTS_URL)
         sb.sleep(8)
 
         if is_logged_in(sb):
             print("✅ Cookie登录成功")
-            save_new_cookie(sb)
+            try:
+                save_new_cookie(sb)
+            except Exception as e:
+                print(f"保存Cookie失败（可忽略，继续执行续期）: {e}")
             return True
 
         # 再刷新一次兜底
@@ -242,7 +246,10 @@ def login_by_cookie(sb):
         sb.sleep(5)
         if is_logged_in(sb):
             print("✅ Cookie登录成功（刷新后）")
-            save_new_cookie(sb)
+            try:
+                save_new_cookie(sb)
+            except Exception as e:
+                print(f"保存Cookie失败（可忽略，继续执行续期）: {e}")
             return True
 
         print("Cookie登录失败")
