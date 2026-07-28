@@ -19,11 +19,6 @@ from selenium.common.exceptions import (
     StaleElementReferenceException,
 )
 
-
-# =========================================================
-# 环境变量
-# =========================================================
-
 EMAIL = os.getenv("EMAIL") or ""
 PASSWORD = os.getenv("PASSWORD") or ""
 
@@ -57,11 +52,6 @@ LOGIN_PATH = "/auth/login"
 PROJECTS_URL = f"{BASE_URL}/dashboard/projects"
 
 
-
-# =========================================================
-# 时间
-# =========================================================
-
 def beijing_time_str():
 
     try:
@@ -75,11 +65,6 @@ def beijing_time_str():
             timezone(timedelta(hours=8))
         ).strftime("%Y-%m-%d %H:%M:%S")
 
-
-
-# =========================================================
-# Telegram
-# =========================================================
 
 def send_telegram(message):
 
@@ -213,12 +198,6 @@ def extract_acl_cookie(sb):
 
 
     return cookie_string
-
-
-
-# =========================================================
-# GitHub Secret 自动更新
-# =========================================================
 
 
 def github_encrypt_secret(public_key, secret_value):
@@ -466,28 +445,23 @@ def is_logged_in(sb):
 
 def login_by_cookie(sb):
 
-
     if not ACL_COOKIE:
-
-        print(
-            "没有ACL_COOKIE"
-        )
-
+        print("没有ACL_COOKIE")
         return False
 
 
+    print("尝试Cookie登录...")
 
-    print(
-        "尝试Cookie登录..."
+
+    # 必须先打开登录域
+    sb.open(
+        "https://dash.aclclouds.com/auth/login"
     )
-
-
-    sb.open(BASE_URL)
 
     sb.sleep(3)
 
 
-    cookies = parse_cookie_string(
+    cookies=parse_cookie_string(
         ACL_COOKIE
     )
 
@@ -498,28 +472,33 @@ def login_by_cookie(sb):
 
             sb.driver.add_cookie({
 
-                "name": name,
+                "name":name,
 
-                "value": value,
+                "value":value,
 
-                "domain":
-                    "dash.aclclouds.com",
-
-                "path": "/"
+                "path":"/"
 
             })
+
+
+            print(
+                "写入Cookie:",
+                name
+            )
+
 
         except Exception as e:
 
             print(
-                f"Cookie写入失败 {name}: {e}"
+                "Cookie写入失败:",
+                name,
+                e
             )
-
 
 
     sb.refresh()
 
-    sb.sleep(5)
+    sb.sleep(8)
 
 
 
@@ -534,11 +513,9 @@ def login_by_cookie(sb):
         return True
 
 
-
     print(
         "Cookie登录失败"
     )
-
 
     return False
 
@@ -729,15 +706,9 @@ def login_by_password(
         "开始账号密码登录"
     )
 
-
-    sb.open(
-        BASE_URL + LOGIN_PATH
-    )
-
-
+    sb.open("https://dash.aclclouds.com/auth/login")
+    
     sb.sleep(3)
-
-
 
     if not EMAIL or not PASSWORD:
 
