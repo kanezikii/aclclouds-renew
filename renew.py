@@ -228,7 +228,6 @@ def login_by_cookie(sb):
                     print(f"普通方式也失败 {name}: {e2}")
 
         # 直接跳转到项目页验证（最重要）
-               # 直接跳转到项目页验证（最重要）
         print("直接访问项目页验证登录状态...")
         sb.open(PROJECTS_URL)
         sb.sleep(8)
@@ -458,7 +457,7 @@ def main():
             print("当前出口IP:", ip)
 
             print("开始登录检测")
-            if not login_acl(sb):
+           if not login_acl(sb):
                 print("登录失败")
                 send_telegram("""⚠️ ACLClouds登录失败
 请检查:
@@ -469,7 +468,12 @@ def main():
                 debug_page_info(sb, "最终登录失败")
                 return
 
-            save_new_cookie(sb)
+            # 登录成功后再次尝试保存 Cookie（失败可忽略）
+            try:
+                save_new_cookie(sb)
+            except Exception as e:
+                print(f"二次保存Cookie失败（可忽略）: {e}")
+
             renew_projects(sb)
 
             print("全部任务完成")
