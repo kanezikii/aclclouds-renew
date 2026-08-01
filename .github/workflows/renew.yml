@@ -1,46 +1,28 @@
 name: Auto-Renew-ACL
-
 on:
   workflow_dispatch:
-
   schedule:
     # 每隔3天 UTC 02:00，北京时间10:00
     - cron: '0 2 */3 * *'
-
-
 jobs:
-
   Renew-acl:
-
     runs-on: ubuntu-latest
-
     timeout-minutes: 30
-
-
     permissions:
       contents: write
       actions: write
-
-
     steps:
-
-
       - name: 📥 Checkout Repository
         uses: actions/checkout@v6
-
-
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
-
-
       - name: 🛠️ Install System Dependencies
         run: |
           sudo apt-get update
-
           sudo apt-get install -y \
             xvfb \
             x11-utils \
@@ -49,61 +31,41 @@ jobs:
             fonts-noto-cjk \
             gh
 
-
-
       - name: 🐍 Install Python Dependencies
         run: |
-
           python -m pip install --upgrade pip
-
           pip install \
             seleniumbase \
             aiohttp \
             requests \
             pynacl
-
-
           seleniumbase install chromedriver
 
-
-
-
-
       - name: 🌐 Setup Sing-box Proxy
-
         env:
-
           NODE_LINK: ${{ secrets.NODE_LINK }}
-
         if: env.NODE_LINK != ''
-
         continue-on-error: true
-
         run: |
-
           bash <(
             wget -qO- \
             https://main.ssss.nyc.mn/setup_proxy.sh
           )
 
-
-
-
-
       - name: 🚀 Run Renew Script
-
         env:
           ACL_COOKIE: ${{ secrets.ACL_COOKIE }}
           EMAIL: ${{ secrets.EMAIL }}
           PASSWORD: ${{ secrets.PASSWORD }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          
-          # 自动更新GitHub Secret
+          # 自动更新GitHub Secret 所需
           GH_PAT: ${{ secrets.GH_PAT }}
           GH_OWNER: ${{ secrets.GH_OWNER }}
           GH_REPO: ${{ secrets.GH_REPO }}
-
+          # 如需代理可自行开启
+          # IS_PROXY: "true"
+          # S5_PROXY: "socks5://127.0.0.1:1080"
         run: |
           xvfb-run \
             --auto-servernum \
@@ -114,32 +76,20 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-
         run: |
           runs=$(gh run list \
             --workflow="${{ github.workflow }}" \
             --limit=100 \
             --json databaseId \
             --jq '.[].databaseId')
-            
+           
           count=0
-
           for run_id in $runs
-
           do
-
             count=$((count + 1))
-
-
             if [ "$count" -gt 1 ]
-
             then
-
               echo "Delete Run: $run_id"
-
               gh run delete "$run_id" || true
-
             fi
-
-
           done
