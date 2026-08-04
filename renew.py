@@ -479,7 +479,6 @@ def renew_projects(sb):
     sb.wait_for_ready_state_complete()
     sb.sleep(6)
 
-    # 进入页面后先截图
     sb.save_screenshot("01_before_click.png")
     print("已保存截图: 01_before_click.png")
 
@@ -502,6 +501,10 @@ def renew_projects(sb):
 
             buttons = find_renew_buttons(card)
             if not buttons:
+                # 如果找不到，尝试直接找页面上的续期按钮
+                buttons = find_renew_buttons(sb.driver)
+            
+            if not buttons:
                 status = f"⏳ 未到续期时间\n提示: {note or '按钮不存在'}"
                 results.append(f"项目: {name}\n当前过期: {old_expiry}\n{status}")
                 continue
@@ -513,12 +516,63 @@ def renew_projects(sb):
                 results.append(f"项目: {name}\n❌ 点击按钮失败\n当前过期: {old_expiry}")
                 continue
 
-            # 点击后立即截图
             sb.sleep(3)
             sb.save_screenshot("02_after_click.png")
             print("已保存截图: 02_after_click.png")
 
-            sb.sleep(5)
+            # ==================== 处理 Anti-bot 弹窗 ====================
+            print(f"[{name}] 检查是否出现 Anti-bot 验证弹窗...")
+            try:
+                # 等待弹窗出现
+                sb.sleep(2)
+                
+                # 尝试勾选 "I am not a robot"
+                checkbox_selectors = [
+                    'input[type="checkbox"]',
+                    'label:contains("I am not a robot")',
+                    'label:contains("not a robot")',
+                    './/label[contains(., "I am not a robot")]',
+                    './/input[@type="checkbox"]',
+                ]
+                
+                checked = False
+                for sel in checkbox_selectors:
+                    try:
+                        if sb.is_element_visible(sel):
+                            sb.click(sel)
+                            print(f"  → 已勾选 Anti-bot 复选框 (selector: {sel})")
+                            checked = True
+                            break
+                    except Exception:
+                        continue
+                
+                if not checked:
+                    # 尝试用 JS 强制勾选
+                    try:
+                        sb.execute_script("""
+                            const checkbox = document.querySelector('input[type="checkbox"]');
+                            if (checkbox) {
+                                checkbox.checked = true;
+                                checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+                                checkbox.click();
+                            }
+                        """)
+                        print("  → 已使用 JS 强制勾选复选框")
+                        checked = True
+                    except Exception as e:
+                        print(f"  → JS 勾选失败: {e}")
+
+                if checked:
+                    sb.sleep(4)  # 给验证通过一些时间
+                    sb.save_screenshot("02b_after_checkbox.png")
+                    print("已保存截图: 02b_after_checkbox.png")
+                else:
+                    print("  → 未找到可勾选的复选框")
+
+            except Exception as e:
+                print(f"处理 Anti-bot 弹窗时出错: {e}")
+
+            # ========================================================
 
             # 刷新后对比时间
             print(f"[{name}] 刷新页面，对比续期前后时间...")
