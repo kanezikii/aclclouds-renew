@@ -176,7 +176,7 @@ def is_logged_in(sb):
         body = sb.get_page_source().lower()
         if any(x in body for x in ["dashboard", "projects", "mes services", "我的服务", "logout", "déconnexion", "se déconnecter"]):
             return True
-        return True  # 保守处理
+        return True
     except Exception:
         return False
 
@@ -236,8 +236,6 @@ def login_by_password(sb):
     try:
         sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=5)
         sb.sleep(4)
-
-        # 常见邮箱选择器
         email_selectors = [
             'input[name="email"]',
             'input[type="email"]',
@@ -262,7 +260,6 @@ def login_by_password(sb):
             'button:contains("Log in")',
             '.btn-login',
         ]
-
         email_found = False
         for sel in email_selectors:
             try:
@@ -276,7 +273,6 @@ def login_by_password(sb):
         if not email_found:
             print("找不到邮箱输入框")
             return False
-
         sb.sleep(0.8)
         pwd_found = False
         for sel in password_selectors:
@@ -291,7 +287,6 @@ def login_by_password(sb):
         if not pwd_found:
             print("找不到密码输入框")
             return False
-
         sb.sleep(0.8)
         clicked = False
         for sel in submit_selectors:
@@ -304,18 +299,15 @@ def login_by_password(sb):
             except Exception:
                 continue
         if not clicked:
-            # 兜底：回车提交
             try:
                 sb.press_keys('input[type="password"]', "\n")
                 print("使用回车键提交")
             except Exception:
                 pass
-
         sb.sleep(10)
         if is_logged_in(sb):
             print("✅ 密码登录成功")
             return True
-        # 有时需要再跳一次项目页确认
         sb.open(PROJECTS_URL)
         sb.sleep(6)
         if is_logged_in(sb):
@@ -327,7 +319,7 @@ def login_by_password(sb):
         print(f"密码登录异常: {e}")
         return False
 
-# ===================== 续期逻辑 =====================
+# ===================== 续期逻辑（已强化点击与验证） =====================
 def element_text(element):
     try:
         return element.text.strip()
@@ -350,13 +342,20 @@ def find_elements(root, selector):
     return root.find_elements(by, selector)
 
 def find_renew_buttons(root):
+    """优先匹配明确的 Renew / Renouveler 按钮"""
     selectors = [
+        # 精确优先
+        'button:contains("Renouveler")',
+        'button:contains("Renew")',
+        'a:contains("Renouveler")',
+        'a:contains("Renew")',
         ".projects-renew-btn",
+        # 兜底 XPath
         './/button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renew")]',
+        './/button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouveler")]',
         './/button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "reactivate")]',
         './/*[(@role="button" or self::a) and contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renew")]',
-        './/*[(@role="button" or self::a) and contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "reactivate")]',
-        './/*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouveler")]',
+        './/*[(@role="button" or self::a) and contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouveler")]',
         './/*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "续订")]',
         './/*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "续期")]',
     ]
@@ -455,27 +454,50 @@ def get_renewal_available_note(card):
     return ""
 
 def safe_click_element(sb, element, label=""):
+    """强化点击：滚动 + 普通点击 + JS强制点击"""
     try:
-        sb.driver.execute_script('arguments[0].scrollIntoView({block: "center"});', element)
-        sb.sleep(0.6)
+        sb.driver.execute_script(
+            'arguments[0].scrollIntoView({behavior: "smooth", block: "center"});',
+            element
+        )
+        sb.sleep(1.2)
+
+        # 普通点击
         try:
             element.click()
+            print(f"  → 普通点击成功 ({label})")
             return True
         except Exception:
-            sb.driver.execute_script("arguments[0].click();", element)
-            return True
+            pass
+
+        # JS 强制点击
+        sb.driver.execute_script("arguments[0].click();", element)
+        print(f"  → JS强制点击成功 ({label})")
+        return True
     except Exception as e:
-        print(label, e)
+        print(f"  → 点击失败 ({label}): {e}")
         return False
 
-def wait_for_renew_result(sb, timeout=25):
+def wait_for_renew_result(sb, timeout=30):
+    """更全面的成功/失败关键词检测"""
     start = time.time()
+    success_keywords = [
+        "success", "successfully", "renewed", "reactivated",
+        "renouvelé", "renouvellement réussi", "续期成功",
+        "successfully purchased", "purchased renewal",
+        "renewal successful", "service renewed"
+    ]
+    not_yet_keywords = [
+        "renouvellement sera disponible", "renewal will be available",
+        "未到续期", "not available yet", "too early", "not yet available"
+    ]
+
     while time.time() - start < timeout:
         try:
             body = sb.driver.find_element(By.TAG_NAME, "body").text.lower()
-            if any(x in body for x in ["success", "successfully", "renewed", "续期成功", "reactivated"]):
+            if any(k in body for k in success_keywords):
                 return True, "success"
-            if any(x in body for x in ["renouvellement sera disponible", "renewal will be available", "未到续期"]):
+            if any(k in body for k in not_yet_keywords):
                 return False, "not_yet"
         except Exception:
             pass
@@ -486,36 +508,69 @@ def renew_projects(sb):
     print("进入项目页面")
     sb.uc_open_with_reconnect(PROJECTS_URL, reconnect_time=5)
     sb.wait_for_ready_state_complete()
-    sb.sleep(5)
+    sb.sleep(6)
+
     cards = find_project_cards(sb)
     results = []
+
     if not cards:
         print("没有找到项目")
         results.append("⚠️ 未找到任何项目")
-    else:
-        print(f"发现 {len(cards)} 个项目")
-        for idx, card in enumerate(cards, 1):
-            try:
-                name = get_project_name(card, idx)
-                expiry = get_project_expiry(card)
-                note = get_renewal_available_note(card)
-                print(f"[{name}] 当前过期: {expiry}")
-                buttons = find_renew_buttons(card)
-                if not buttons:
-                    status = f"⏳ 未到续期时间\n提示: {note or '按钮不存在'}"
-                    results.append(f"项目: {name}\n当前过期: {expiry}\n{status}")
-                    continue
-                print(f"[{name}] 点击续期")
-                safe_click_element(sb, buttons[0], name)
-                sb.sleep(4)
-                success, status = wait_for_renew_result(sb)
-                if success:
-                    new_expiry = get_project_expiry(card)
-                    results.append(f"项目: {name}\n✅ 续期成功\n新到期: {new_expiry}")
-                else:
-                    results.append(f"项目: {name}\n❌ 续期失败/未确认\n当前过期: {expiry}\n状态: {status}")
-            except Exception as e:
-                results.append(f"项目处理异常: {e}")
+        return results
+
+    print(f"发现 {len(cards)} 个项目")
+
+    for idx, card in enumerate(cards, 1):
+        try:
+            name = get_project_name(card, idx)
+            expiry = get_project_expiry(card)
+            note = get_renewal_available_note(card)
+            print(f"[{name}] 当前过期: {expiry}")
+
+            buttons = find_renew_buttons(card)
+            if not buttons:
+                status = f"⏳ 未到续期时间\n提示: {note or '按钮不存在'}"
+                results.append(f"项目: {name}\n当前过期: {expiry}\n{status}")
+                continue
+
+            print(f"[{name}] 找到 {len(buttons)} 个续期按钮，准备强制点击")
+            clicked = safe_click_element(sb, buttons[0], name)
+
+            if not clicked:
+                results.append(f"项目: {name}\n❌ 点击按钮失败\n当前过期: {expiry}")
+                continue
+
+            # 点击后多等一会儿，给页面充分反应时间
+            sb.sleep(7)
+
+            success, status = wait_for_renew_result(sb, timeout=28)
+
+            if success:
+                # 刷新页面后重新获取真实新到期时间
+                print(f"[{name}] 检测到成功提示，刷新页面验证新到期时间...")
+                sb.refresh()
+                sb.sleep(6)
+                new_cards = find_project_cards(sb)
+                new_expiry = "未知"
+                if new_cards:
+                    new_expiry = get_project_expiry(new_cards[0])
+
+                results.append(
+                    f"项目: {name}\n✅ 续期成功\n"
+                    f"原到期: {expiry}\n新到期: {new_expiry}"
+                )
+                print(f"[{name}] ✅ 续期成功，新到期: {new_expiry}")
+            else:
+                results.append(
+                    f"项目: {name}\n❌ 续期失败/未确认\n"
+                    f"当前过期: {expiry}\n状态: {status}"
+                )
+                print(f"[{name}] ❌ 续期结果未确认 (状态: {status})")
+
+        except Exception as e:
+            results.append(f"项目处理异常: {e}")
+            print(f"项目处理异常: {e}")
+
     return results
 
 def get_current_ip(proxy_server=""):
