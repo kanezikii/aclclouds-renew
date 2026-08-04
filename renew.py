@@ -320,149 +320,15 @@ def login_by_password(sb):
         return False
 
 # ===================== 续期逻辑（已强化点击与验证） =====================
-def element_text(element):
-    try:
-        return element.text.strip()
-    except Exception:
-        return ""
-
-def unique_elements(elements):
-    unique, seen = [], set()
-    for element in elements:
-        element_id = getattr(element, "id", None)
-        if element_id and element_id in seen:
-            continue
-        if element_id:
-            seen.add(element_id)
-        unique.append(element)
-    return unique
-
-def find_elements(root, selector):
-    by = By.XPATH if selector.startswith(("/", ".//")) else By.CSS_SELECTOR
-    return root.find_elements(by, selector)
-
-def find_renew_buttons(root):
-    """优先匹配明确的 Renew / Renouveler 按钮"""
-    selectors = [
-        # 精确优先
-        'button:contains("Renouveler")',
-        'button:contains("Renew")',
-        'a:contains("Renouveler")',
-        'a:contains("Renew")',
-        ".projects-renew-btn",
-        # 兜底 XPath
-        './/button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renew")]',
-        './/button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouveler")]',
-        './/button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "reactivate")]',
-        './/*[(@role="button" or self::a) and contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renew")]',
-        './/*[(@role="button" or self::a) and contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouveler")]',
-        './/*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "续订")]',
-        './/*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "续期")]',
-    ]
-    buttons = []
-    for selector in selectors:
-        try:
-            buttons.extend(find_elements(root, selector))
-        except Exception:
-            continue
-    return unique_elements([b for b in buttons if element_text(b) or b.is_displayed()])
-
-def find_project_cards(sb):
-    candidate_selectors = [
-        ".projects-card",
-        '[class*="projects-card"]',
-        '[class*="project"][class*="card"]',
-        '[class*="service"][class*="card"]',
-        "article",
-        '[class*="card"]',
-    ]
-    raw_cards = []
-    for selector in candidate_selectors:
-        try:
-            for card in sb.driver.find_elements(By.CSS_SELECTOR, selector):
-                text = element_text(card).lower()
-                has_expiry = any(k in text for k in ["expire", "expires", "到期", "expire dans", "expires in", "剩余"])
-                has_name_hint = any(k in text for k in ["node", "bot", "vps", "minecraft", "renqi", "人气", "服务"])
-                if has_expiry and (has_name_hint or len(text) > 40):
-                    raw_cards.append(card)
-        except Exception:
-            continue
-    unique_cards = []
-    seen = set()
-    for card in unique_elements(raw_cards):
-        name = get_project_name(card, 0).lower().strip()
-        expiry = get_project_expiry(card).lower().strip()
-        if name in ["expires in", "expire dans", "ram", "stockage", "内存", "贮存", "未知", ""]:
-            continue
-        if len(name) < 2:
-            continue
-        signature = (name, expiry)
-        if signature in seen:
-            continue
-        seen.add(signature)
-        unique_cards.append(card)
-    return unique_cards
-
-def extract_duration_like(text):
-    if not text:
-        return ""
-    match = re.search(r"(?:expires?\s+in\s*|expire\s+dans\s*|剩余|还有)?\s*\d+\s*(?:d|day|days|j|天|日)\s*\d*\s*(?:h|hour|hours|小时)?", text, re.I)
-    if match:
-        return match.group(0).strip()
-    match = re.search(r"\d+\s*(?:h|hour|hours|小时)", text, re.I)
-    if match:
-        return match.group(0).strip()
-    return ""
-
-def get_project_name(card, idx):
-    for selector in [".projects-card-title", "h1", "h2", "h3", "h4", "[class*=title]", "[class*=name]", "strong"]:
-        try:
-            for elem in card.find_elements(By.CSS_SELECTOR, selector):
-                text = element_text(elem)
-                if text and len(text) <= 80 and "renew" not in text.lower() and "expiry" not in text.lower():
-                    return text
-        except Exception:
-            continue
-    for line in element_text(card).splitlines():
-        line = line.strip()
-        if line and len(line) <= 80 and not extract_duration_like(line):
-            return line
-    return f"项目 #{idx}"
-
-def get_project_expiry(card):
-    text = element_text(card)
-    duration = extract_duration_like(text)
-    if duration:
-        return duration
-    match = re.search(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", text)
-    if match:
-        return match.group(0)
-    return "未知"
-
-def get_renewal_available_note(card):
-    text = element_text(card)
-    patterns = [
-        r"Renewal\s+will\s+be\s+available[^\n]*",
-        r"Le renouvellement sera disponible[^\n]*",
-        r"续期[^\n]*前[^\n]*",
-        r"可续期[^\n]*",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, re.I)
-        if match:
-            return match.group(0).strip()
-    return ""
-
 def safe_click_element(sb, element, label=""):
-    """强化点击：滚动 + 普通点击 + JS强制点击"""
+    """强化点击"""
     try:
         sb.driver.execute_script(
             'arguments[0].scrollIntoView({behavior: "smooth", block: "center"});',
             element
         )
-        sb.sleep(1.2)
+        sb.sleep(1.5)
 
-        # 普通点击
         try:
             element.click()
             print(f"  → 普通点击成功 ({label})")
@@ -470,7 +336,6 @@ def safe_click_element(sb, element, label=""):
         except Exception:
             pass
 
-        # JS 强制点击
         sb.driver.execute_script("arguments[0].click();", element)
         print(f"  → JS强制点击成功 ({label})")
         return True
@@ -478,18 +343,19 @@ def safe_click_element(sb, element, label=""):
         print(f"  → 点击失败 ({label}): {e}")
         return False
 
-def wait_for_renew_result(sb, timeout=30):
-    """更全面的成功/失败关键词检测"""
+
+def wait_for_renew_result(sb, timeout=20):
+    """关键词检测（缩短超时，因为后面还有时间对比验证）"""
     start = time.time()
     success_keywords = [
         "success", "successfully", "renewed", "reactivated",
         "renouvelé", "renouvellement réussi", "续期成功",
         "successfully purchased", "purchased renewal",
-        "renewal successful", "service renewed"
+        "renewal successful", "service renewed", "extended"
     ]
     not_yet_keywords = [
         "renouvellement sera disponible", "renewal will be available",
-        "未到续期", "not available yet", "too early", "not yet available"
+        "未到续期", "not available yet", "too early"
     ]
 
     while time.time() - start < timeout:
@@ -501,8 +367,9 @@ def wait_for_renew_result(sb, timeout=30):
                 return False, "not_yet"
         except Exception:
             pass
-        sb.sleep(1.5)
+        sb.sleep(1.2)
     return False, "timeout"
+
 
 def renew_projects(sb):
     print("进入项目页面")
@@ -523,49 +390,71 @@ def renew_projects(sb):
     for idx, card in enumerate(cards, 1):
         try:
             name = get_project_name(card, idx)
-            expiry = get_project_expiry(card)
+            old_expiry = get_project_expiry(card)
             note = get_renewal_available_note(card)
-            print(f"[{name}] 当前过期: {expiry}")
+            print(f"[{name}] 当前过期: {old_expiry}")
 
             buttons = find_renew_buttons(card)
             if not buttons:
                 status = f"⏳ 未到续期时间\n提示: {note or '按钮不存在'}"
-                results.append(f"项目: {name}\n当前过期: {expiry}\n{status}")
+                results.append(f"项目: {name}\n当前过期: {old_expiry}\n{status}")
                 continue
 
             print(f"[{name}] 找到 {len(buttons)} 个续期按钮，准备强制点击")
             clicked = safe_click_element(sb, buttons[0], name)
 
             if not clicked:
-                results.append(f"项目: {name}\n❌ 点击按钮失败\n当前过期: {expiry}")
+                results.append(f"项目: {name}\n❌ 点击按钮失败\n当前过期: {old_expiry}")
                 continue
 
-            # 点击后多等一会儿，给页面充分反应时间
-            sb.sleep(7)
+            # 点击后等待
+            sb.sleep(8)
 
-            success, status = wait_for_renew_result(sb, timeout=28)
+            # 1. 先尝试关键词检测
+            success, status = wait_for_renew_result(sb, timeout=15)
 
+            # 2. 无论关键词是否成功，都刷新页面，用时间对比做最终验证（最可靠）
+            print(f"[{name}] 刷新页面，对比续期前后时间...")
+            sb.refresh()
+            sb.sleep(6)
+
+            new_cards = find_project_cards(sb)
+            new_expiry = "未知"
+            if new_cards:
+                new_expiry = get_project_expiry(new_cards[0])
+
+            print(f"[{name}] 原到期: {old_expiry}  →  新到期: {new_expiry}")
+
+            # 判断是否真正续期成功：新时间比旧时间长，或者关键词检测到成功
+            is_success = False
             if success:
-                # 刷新页面后重新获取真实新到期时间
-                print(f"[{name}] 检测到成功提示，刷新页面验证新到期时间...")
-                sb.refresh()
-                sb.sleep(6)
-                new_cards = find_project_cards(sb)
-                new_expiry = "未知"
-                if new_cards:
-                    new_expiry = get_project_expiry(new_cards[0])
+                is_success = True
+            else:
+                # 简单判断：如果新时间包含更大的数字，基本可认为成功
+                # （免费版通常是 +24h 或 +48h）
+                if new_expiry != "未知" and new_expiry != old_expiry:
+                    # 进一步粗略判断时长是否增加
+                    old_match = re.search(r"(\d+)", old_expiry)
+                    new_match = re.search(r"(\d+)", new_expiry)
+                    if old_match and new_match:
+                        if int(new_match.group(1)) > int(old_match.group(1)):
+                            is_success = True
+                    else:
+                        # 时间文本变了也算成功
+                        is_success = True
 
+            if is_success:
                 results.append(
                     f"项目: {name}\n✅ 续期成功\n"
-                    f"原到期: {expiry}\n新到期: {new_expiry}"
+                    f"原到期: {old_expiry}\n新到期: {new_expiry}"
                 )
-                print(f"[{name}] ✅ 续期成功，新到期: {new_expiry}")
+                print(f"[{name}] ✅ 续期成功确认")
             else:
                 results.append(
                     f"项目: {name}\n❌ 续期失败/未确认\n"
-                    f"当前过期: {expiry}\n状态: {status}"
+                    f"原到期: {old_expiry}\n新到期: {new_expiry}\n状态: {status}"
                 )
-                print(f"[{name}] ❌ 续期结果未确认 (状态: {status})")
+                print(f"[{name}] ❌ 续期未确认成功")
 
         except Exception as e:
             results.append(f"项目处理异常: {e}")
