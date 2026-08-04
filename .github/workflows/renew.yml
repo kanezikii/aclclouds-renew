@@ -72,6 +72,18 @@ jobs:
             --server-args="-screen 0 1366x768x24" \
             python3 renew.py
 
+      - name: 📸 上传截图
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: renew-debug-screenshots
+          path: |
+            01_before_click.png
+            02_after_click.png
+            03_after_refresh.png
+            renew_result.png
+          retention-days: 3
+
       - name: 🧹 Cleanup Old Workflow Runs
         if: always()
         env:
