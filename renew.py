@@ -501,9 +501,8 @@ def renew_projects(sb):
 
             buttons = find_renew_buttons(card)
             if not buttons:
-                # 如果找不到，尝试直接找页面上的续期按钮
                 buttons = find_renew_buttons(sb.driver)
-            
+
             if not buttons:
                 status = f"⏳ 未到续期时间\n提示: {note or '按钮不存在'}"
                 results.append(f"项目: {name}\n当前过期: {old_expiry}\n{status}")
@@ -520,59 +519,59 @@ def renew_projects(sb):
             sb.save_screenshot("02_after_click.png")
             print("已保存截图: 02_after_click.png")
 
-            # ==================== 处理 Anti-bot 弹窗 ====================
-            print(f"[{name}] 检查是否出现 Anti-bot 验证弹窗...")
+            # ==================== 处理自定义 Anti-bot 验证框 ====================
+            print(f"[{name}] 检查并处理 Anti-bot 验证弹窗...")
             try:
-                # 等待弹窗出现
                 sb.sleep(2)
-                
-                # 尝试勾选 "I am not a robot"
-                checkbox_selectors = [
-                    'input[type="checkbox"]',
-                    'label:contains("I am not a robot")',
-                    'label:contains("not a robot")',
-                    './/label[contains(., "I am not a robot")]',
-                    './/input[@type="checkbox"]',
+
+                # 这是真正的自定义复选框（从你截图确认的 class）
+                captcha_selectors = [
+                    'div.auth-captcha-checkbox',
+                    '.auth-captcha-checkbox',
+                    '[role="checkbox"]',
+                    '.auth-captcha-inner',
+                    'div.auth-captcha-inner',
                 ]
-                
+
                 checked = False
-                for sel in checkbox_selectors:
+                for sel in captcha_selectors:
                     try:
                         if sb.is_element_visible(sel):
+                            # 普通点击
                             sb.click(sel)
-                            print(f"  → 已勾选 Anti-bot 复选框 (selector: {sel})")
+                            print(f"  → 已点击自定义验证框 (selector: {sel})")
                             checked = True
                             break
                     except Exception:
                         continue
-                
+
                 if not checked:
-                    # 尝试用 JS 强制勾选
+                    # 最后用 JS 强制点击
                     try:
                         sb.execute_script("""
-                            const checkbox = document.querySelector('input[type="checkbox"]');
-                            if (checkbox) {
-                                checkbox.checked = true;
-                                checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-                                checkbox.click();
+                            const el = document.querySelector('div.auth-captcha-checkbox') 
+                                    || document.querySelector('[role="checkbox"]')
+                                    || document.querySelector('.auth-captcha-inner');
+                            if (el) {
+                                el.click();
+                                el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
                             }
                         """)
-                        print("  → 已使用 JS 强制勾选复选框")
+                        print("  → 已使用 JS 强制点击自定义验证框")
                         checked = True
                     except Exception as e:
-                        print(f"  → JS 勾选失败: {e}")
+                        print(f"  → JS 点击验证框失败: {e}")
 
                 if checked:
-                    sb.sleep(4)  # 给验证通过一些时间
+                    sb.sleep(5)  # 给验证通过足够时间
                     sb.save_screenshot("02b_after_checkbox.png")
                     print("已保存截图: 02b_after_checkbox.png")
                 else:
-                    print("  → 未找到可勾选的复选框")
+                    print("  → 未找到可点击的验证框")
 
             except Exception as e:
                 print(f"处理 Anti-bot 弹窗时出错: {e}")
-
-            # ========================================================
+            # ================================================================
 
             # 刷新后对比时间
             print(f"[{name}] 刷新页面，对比续期前后时间...")
