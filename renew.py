@@ -519,59 +519,117 @@ def renew_projects(sb):
             sb.save_screenshot("02_after_click.png")
             print("已保存截图: 02_after_click.png")
 
-            # ==================== 处理自定义 Anti-bot 验证框 ====================
-            print(f"[{name}] 检查并处理 Anti-bot 验证弹窗...")
+            # ==================== 自动破解 Anti-bot 验证（支持随机目标） ====================
+            print(f"[{name}] 开始自动破解 Anti-bot 验证...")
             try:
                 sb.sleep(2)
 
-                # 这是真正的自定义复选框（从你截图确认的 class）
+                # 第一阶段：点击自定义复选框
                 captcha_selectors = [
                     'div.auth-captcha-checkbox',
                     '.auth-captcha-checkbox',
                     '[role="checkbox"]',
                     '.auth-captcha-inner',
-                    'div.auth-captcha-inner',
                 ]
-
-                checked = False
                 for sel in captcha_selectors:
                     try:
                         if sb.is_element_visible(sel):
-                            # 普通点击
                             sb.click(sel)
-                            print(f"  → 已点击自定义验证框 (selector: {sel})")
-                            checked = True
+                            print(f"  → 已点击第一阶段验证框")
                             break
                     except Exception:
                         continue
-
-                if not checked:
-                    # 最后用 JS 强制点击
-                    try:
-                        sb.execute_script("""
-                            const el = document.querySelector('div.auth-captcha-checkbox') 
-                                    || document.querySelector('[role="checkbox"]')
-                                    || document.querySelector('.auth-captcha-inner');
-                            if (el) {
-                                el.click();
-                                el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-                            }
-                        """)
-                        print("  → 已使用 JS 强制点击自定义验证框")
-                        checked = True
-                    except Exception as e:
-                        print(f"  → JS 点击验证框失败: {e}")
-
-                if checked:
-                    sb.sleep(5)  # 给验证通过足够时间
-                    sb.save_screenshot("02b_after_checkbox.png")
-                    print("已保存截图: 02b_after_checkbox.png")
                 else:
-                    print("  → 未找到可点击的验证框")
+                    sb.execute_script("""
+                        const el = document.querySelector('div.auth-captcha-checkbox') 
+                                || document.querySelector('[role="checkbox"]');
+                        if (el) el.click();
+                    """)
+                    print("  → 已使用 JS 点击第一阶段验证框")
+
+                sb.sleep(3)
+                sb.save_screenshot("02b_after_checkbox.png")
+                print("已保存截图: 02b_after_checkbox.png")
+
+                # 第二阶段：动态读取指令并点击正确选项
+                print("  → 正在识别第二阶段随机目标...")
+
+                # 获取弹窗全部文字
+                modal_text = ""
+                try:
+                    modal_text = sb.get_text("body").lower()
+                except Exception:
+                    pass
+
+                # 提取目标单词（支持 Click on XXX）
+                target = None
+                possible_targets = ["panel", "cloud", "bot", "vps"]
+                for word in possible_targets:
+                    if f"click on {word}" in modal_text or f"click on **{word}**" in modal_text:
+                        target = word
+                        break
+
+                # 如果上面没匹配到，尝试更宽松的匹配
+                if not target:
+                    for word in possible_targets:
+                        if word in modal_text and ("click" in modal_text or "select" in modal_text):
+                            target = word
+                            break
+
+                if target:
+                    print(f"  → 识别到目标: {target.upper()}")
+                    
+                    # 点击对应的选项
+                    clicked_target = False
+                    
+                    # 方法1：用 Selenium 点击包含目标文字的元素
+                    try:
+                        # 优先精确匹配
+                        elements = sb.find_elements("button, div, span")
+                        for el in elements:
+                            try:
+                                text = el.text.strip().lower()
+                                if text == target:
+                                    el.click()
+                                    print(f"  → 已点击目标选项: {target.upper()}")
+                                    clicked_target = True
+                                    break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+
+                    # 方法2：JS 强制点击
+                    if not clicked_target:
+                        try:
+                            sb.execute_script(f"""
+                                const target = "{target}";
+                                const elements = document.querySelectorAll('button, div, span');
+                                for (let el of elements) {{
+                                    if (el.innerText && el.innerText.trim().toLowerCase() === target) {{
+                                        el.click();
+                                        break;
+                                    }}
+                                }}
+                            """)
+                            print(f"  → 已使用 JS 点击目标选项: {target.upper()}")
+                            clicked_target = True
+                        except Exception as e:
+                            print(f"  → JS 点击目标失败: {e}")
+
+                    if clicked_target:
+                        sb.sleep(5)
+                        sb.save_screenshot("02c_after_target.png")
+                        print("已保存截图: 02c_after_target.png")
+                    else:
+                        print("  → 未能成功点击目标选项")
+                else:
+                    print("  → 未能识别出随机目标单词")
+                    sb.save_screenshot("02c_no_target.png")
 
             except Exception as e:
                 print(f"处理 Anti-bot 弹窗时出错: {e}")
-            # ================================================================
+            # ==================================================================
 
             # 刷新后对比时间
             print(f"[{name}] 刷新页面，对比续期前后时间...")
