@@ -519,12 +519,12 @@ def renew_projects(sb):
             sb.save_screenshot("02_after_click.png")
             print("已保存截图: 02_after_click.png")
 
-            # ==================== 自动破解 Anti-bot 验证（支持随机目标） ====================
+            # ==================== 通用 Anti-bot 破解（支持任意随机词） ====================
             print(f"[{name}] 开始自动破解 Anti-bot 验证...")
             try:
                 sb.sleep(2)
 
-                # 第一阶段：点击自定义复选框
+                # ---------- 第一阶段：点击自定义复选框 ----------
                 captcha_selectors = [
                     'div.auth-captcha-checkbox',
                     '.auth-captcha-checkbox',
@@ -551,80 +551,77 @@ def renew_projects(sb):
                 sb.save_screenshot("02b_after_checkbox.png")
                 print("已保存截图: 02b_after_checkbox.png")
 
-                # 第二阶段：动态读取指令并点击正确选项
+                # ---------- 第二阶段：动态提取 “Click on XXX” 并点击 ----------
                 print("  → 正在识别第二阶段随机目标...")
 
-                # 获取弹窗全部文字
-                modal_text = ""
-                try:
-                    modal_text = sb.get_text("body").lower()
-                except Exception:
-                    pass
-
-                # 提取目标单词（支持 Click on XXX）
+                # 获取弹窗区域文字
+                body_text = sb.get_text("body")
+                
+                # 用正则提取 “Click on XXX” 后面的单词（支持大小写、空格、加粗等）
                 target = None
-                possible_targets = ["panel", "cloud", "bot", "vps"]
-                for word in possible_targets:
-                    if f"click on {word}" in modal_text or f"click on **{word}**" in modal_text:
-                        target = word
-                        break
-
-                # 如果上面没匹配到，尝试更宽松的匹配
-                if not target:
-                    for word in possible_targets:
-                        if word in modal_text and ("click" in modal_text or "select" in modal_text):
-                            target = word
-                            break
+                match = re.search(r'Click\s+on\s+([A-Za-zÀ-ÿ]+)', body_text, re.IGNORECASE)
+                if match:
+                    target = match.group(1).strip()
+                    print(f"  → 成功识别到目标单词: 【{target}】")
+                else:
+                    # 备用方案：在常见位置找
+                    print("  → 正则未匹配到，尝试备用提取...")
+                    for line in body_text.splitlines():
+                        if "click on" in line.lower():
+                            parts = line.lower().split("click on")
+                            if len(parts) > 1:
+                                target = parts[1].strip().split()[0]
+                                print(f"  → 备用方案识别到目标: 【{target}】")
+                                break
 
                 if target:
-                    print(f"  → 识别到目标: {target.upper()}")
-                    
-                    # 点击对应的选项
                     clicked_target = False
-                    
-                    # 方法1：用 Selenium 点击包含目标文字的元素
+
+                    # 方法1：Selenium 精确点击
                     try:
-                        # 优先精确匹配
-                        elements = sb.find_elements("button, div, span")
+                        elements = sb.find_elements("button, div, span, a")
                         for el in elements:
                             try:
-                                text = el.text.strip().lower()
-                                if text == target:
+                                text = el.text.strip()
+                                if text.lower() == target.lower():
                                     el.click()
-                                    print(f"  → 已点击目标选项: {target.upper()}")
+                                    print(f"  → 已点击目标选项: {target}")
                                     clicked_target = True
                                     break
                             except Exception:
                                 continue
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"  → Selenium 点击异常: {e}")
 
-                    # 方法2：JS 强制点击
+                    # 方法2：JS 强制点击（更可靠）
                     if not clicked_target:
                         try:
                             sb.execute_script(f"""
-                                const target = "{target}";
-                                const elements = document.querySelectorAll('button, div, span');
+                                const target = "{target}".toLowerCase();
+                                const elements = document.querySelectorAll('button, div, span, a');
                                 for (let el of elements) {{
                                     if (el.innerText && el.innerText.trim().toLowerCase() === target) {{
+                                        el.scrollIntoView({{block: 'center'}});
                                         el.click();
-                                        break;
+                                        return true;
                                     }}
                                 }}
+                                return false;
                             """)
-                            print(f"  → 已使用 JS 点击目标选项: {target.upper()}")
+                            print(f"  → 已使用 JS 点击目标选项: {target}")
                             clicked_target = True
                         except Exception as e:
                             print(f"  → JS 点击目标失败: {e}")
 
                     if clicked_target:
-                        sb.sleep(5)
+                        sb.sleep(6)
                         sb.save_screenshot("02c_after_target.png")
                         print("已保存截图: 02c_after_target.png")
                     else:
                         print("  → 未能成功点击目标选项")
+                        sb.save_screenshot("02c_failed_click.png")
                 else:
-                    print("  → 未能识别出随机目标单词")
+                    print("  → 完全未能识别出目标单词")
                     sb.save_screenshot("02c_no_target.png")
 
             except Exception as e:
