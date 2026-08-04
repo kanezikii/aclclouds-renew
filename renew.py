@@ -72,7 +72,6 @@ def build_cookie_string(cookies):
     return "; ".join(result)
 
 def extract_acl_cookie(sb):
-    """优先使用 CDP 获取 Cookie，失败再降级到 driver.get_cookies()"""
     try:
         result = sb.execute_cdp_cmd("Network.getAllCookies", {})
         cookies = result.get("cookies", [])
@@ -228,7 +227,6 @@ def login_by_cookie(sb):
         return False
 
 def login_by_password(sb):
-    """密码登录回退（当 Cookie 失效时使用）"""
     if not EMAIL or not PASSWORD:
         print("没有 EMAIL 或 PASSWORD，无法进行密码登录")
         return False
@@ -237,28 +235,17 @@ def login_by_password(sb):
         sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=5)
         sb.sleep(4)
         email_selectors = [
-            'input[name="email"]',
-            'input[type="email"]',
-            '#email',
-            'input[placeholder*="email" i]',
-            'input[placeholder*="courriel" i]',
-            'input[placeholder*="Email"]',
-            'input[name="username"]',
+            'input[name="email"]', 'input[type="email"]', '#email',
+            'input[placeholder*="email" i]', 'input[placeholder*="courriel" i]',
+            'input[placeholder*="Email"]', 'input[name="username"]',
         ]
         password_selectors = [
-            'input[name="password"]',
-            'input[type="password"]',
-            '#password',
+            'input[name="password"]', 'input[type="password"]', '#password',
         ]
         submit_selectors = [
-            'button[type="submit"]',
-            'input[type="submit"]',
-            'button.btn-primary',
-            'button:contains("Connexion")',
-            'button:contains("Login")',
-            'button:contains("Se connecter")',
-            'button:contains("Log in")',
-            '.btn-login',
+            'button[type="submit"]', 'input[type="submit"]', 'button.btn-primary',
+            'button:contains("Connexion")', 'button:contains("Login")',
+            'button:contains("Se connecter")', 'button:contains("Log in")', '.btn-login',
         ]
         email_found = False
         for sel in email_selectors:
@@ -319,23 +306,150 @@ def login_by_password(sb):
         print(f"密码登录异常: {e}")
         return False
 
-# ===================== 续期逻辑（已强化点击与验证） =====================
+# ===================== 续期逻辑 =====================
+def element_text(element):
+    try:
+        return element.text.strip()
+    except Exception:
+        return ""
+
+def unique_elements(elements):
+    unique, seen = [], set()
+    for element in elements:
+        element_id = getattr(element, "id", None)
+        if element_id and element_id in seen:
+            continue
+        if element_id:
+            seen.add(element_id)
+        unique.append(element)
+    return unique
+
+def find_elements(root, selector):
+    by = By.XPATH if selector.startswith(("/", ".//")) else By.CSS_SELECTOR
+    return root.find_elements(by, selector)
+
+def find_renew_buttons(root):
+    selectors = [
+        'button:contains("Renouveler")',
+        'button:contains("Renew")',
+        'a:contains("Renouveler")',
+        'a:contains("Renew")',
+        ".projects-renew-btn",
+        './/button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renew")]',
+        './/button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouveler")]',
+        './/button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "reactivate")]',
+        './/*[(@role="button" or self::a) and contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renew")]',
+        './/*[(@role="button" or self::a) and contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouveler")]',
+        './/*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "续订")]',
+        './/*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "续期")]',
+    ]
+    buttons = []
+    for selector in selectors:
+        try:
+            buttons.extend(find_elements(root, selector))
+        except Exception:
+            continue
+    return unique_elements([b for b in buttons if element_text(b) or b.is_displayed()])
+
+def find_project_cards(sb):
+    candidate_selectors = [
+        ".projects-card",
+        '[class*="projects-card"]',
+        '[class*="project"][class*="card"]',
+        '[class*="service"][class*="card"]',
+        "article",
+        '[class*="card"]',
+    ]
+    raw_cards = []
+    for selector in candidate_selectors:
+        try:
+            for card in sb.driver.find_elements(By.CSS_SELECTOR, selector):
+                text = element_text(card).lower()
+                has_expiry = any(k in text for k in ["expire", "expires", "到期", "expire dans", "expires in", "剩余"])
+                has_name_hint = any(k in text for k in ["node", "bot", "vps", "minecraft", "renqi", "人气", "服务"])
+                if has_expiry and (has_name_hint or len(text) > 40):
+                    raw_cards.append(card)
+        except Exception:
+            continue
+    unique_cards = []
+    seen = set()
+    for card in unique_elements(raw_cards):
+        name = get_project_name(card, 0).lower().strip()
+        expiry = get_project_expiry(card).lower().strip()
+        if name in ["expires in", "expire dans", "ram", "stockage", "内存", "贮存", "未知", ""]:
+            continue
+        if len(name) < 2:
+            continue
+        signature = (name, expiry)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        unique_cards.append(card)
+    return unique_cards
+
+def extract_duration_like(text):
+    if not text:
+        return ""
+    match = re.search(r"(?:expires?\s+in\s*|expire\s+dans\s*|剩余|还有)?\s*\d+\s*(?:d|day|days|j|天|日)\s*\d*\s*(?:h|hour|hours|小时)?", text, re.I)
+    if match:
+        return match.group(0).strip()
+    match = re.search(r"\d+\s*(?:h|hour|hours|小时)", text, re.I)
+    if match:
+        return match.group(0).strip()
+    return ""
+
+def get_project_name(card, idx):
+    for selector in [".projects-card-title", "h1", "h2", "h3", "h4", "[class*=title]", "[class*=name]", "strong"]:
+        try:
+            for elem in card.find_elements(By.CSS_SELECTOR, selector):
+                text = element_text(elem)
+                if text and len(text) <= 80 and "renew" not in text.lower() and "expiry" not in text.lower():
+                    return text
+        except Exception:
+            continue
+    for line in element_text(card).splitlines():
+        line = line.strip()
+        if line and len(line) <= 80 and not extract_duration_like(line):
+            return line
+    return f"项目 #{idx}"
+
+def get_project_expiry(card):
+    text = element_text(card)
+    duration = extract_duration_like(text)
+    if duration:
+        return duration
+    match = re.search(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", text)
+    if match:
+        return match.group(0)
+    return "未知"
+
+def get_renewal_available_note(card):
+    text = element_text(card)
+    patterns = [
+        r"Renewal\s+will\s+be\s+available[^\n]*",
+        r"Le renouvellement sera disponible[^\n]*",
+        r"续期[^\n]*前[^\n]*",
+        r"可续期[^\n]*",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            return match.group(0).strip()
+    return ""
+
 def safe_click_element(sb, element, label=""):
-    """强化点击"""
     try:
         sb.driver.execute_script(
             'arguments[0].scrollIntoView({behavior: "smooth", block: "center"});',
             element
         )
         sb.sleep(1.5)
-
         try:
             element.click()
             print(f"  → 普通点击成功 ({label})")
             return True
         except Exception:
             pass
-
         sb.driver.execute_script("arguments[0].click();", element)
         print(f"  → JS强制点击成功 ({label})")
         return True
@@ -343,9 +457,7 @@ def safe_click_element(sb, element, label=""):
         print(f"  → 点击失败 ({label}): {e}")
         return False
 
-
-def wait_for_renew_result(sb, timeout=20):
-    """关键词检测（缩短超时，因为后面还有时间对比验证）"""
+def wait_for_renew_result(sb, timeout=15):
     start = time.time()
     success_keywords = [
         "success", "successfully", "renewed", "reactivated",
@@ -357,7 +469,6 @@ def wait_for_renew_result(sb, timeout=20):
         "renouvellement sera disponible", "renewal will be available",
         "未到续期", "not available yet", "too early"
     ]
-
     while time.time() - start < timeout:
         try:
             body = sb.driver.find_element(By.TAG_NAME, "body").text.lower()
@@ -369,7 +480,6 @@ def wait_for_renew_result(sb, timeout=20):
             pass
         sb.sleep(1.2)
     return False, "timeout"
-
 
 def renew_projects(sb):
     print("进入项目页面")
@@ -407,13 +517,12 @@ def renew_projects(sb):
                 results.append(f"项目: {name}\n❌ 点击按钮失败\n当前过期: {old_expiry}")
                 continue
 
-            # 点击后等待
             sb.sleep(8)
 
-            # 1. 先尝试关键词检测
+            # 关键词检测
             success, status = wait_for_renew_result(sb, timeout=15)
 
-            # 2. 无论关键词是否成功，都刷新页面，用时间对比做最终验证（最可靠）
+            # 强制刷新后对比时间（最可靠验证）
             print(f"[{name}] 刷新页面，对比续期前后时间...")
             sb.refresh()
             sb.sleep(6)
@@ -425,22 +534,17 @@ def renew_projects(sb):
 
             print(f"[{name}] 原到期: {old_expiry}  →  新到期: {new_expiry}")
 
-            # 判断是否真正续期成功：新时间比旧时间长，或者关键词检测到成功
             is_success = False
             if success:
                 is_success = True
             else:
-                # 简单判断：如果新时间包含更大的数字，基本可认为成功
-                # （免费版通常是 +24h 或 +48h）
                 if new_expiry != "未知" and new_expiry != old_expiry:
-                    # 进一步粗略判断时长是否增加
                     old_match = re.search(r"(\d+)", old_expiry)
                     new_match = re.search(r"(\d+)", new_expiry)
                     if old_match and new_match:
                         if int(new_match.group(1)) > int(old_match.group(1)):
                             is_success = True
                     else:
-                        # 时间文本变了也算成功
                         is_success = True
 
             if is_success:
@@ -486,10 +590,7 @@ def main():
             print("当前出口IP:", get_current_ip(PROXY_SERVER if IS_PROXY else ""))
             print("开始登录检测")
 
-            # 1. 优先 Cookie 登录
             logged_in = login_by_cookie(sb)
-
-            # 2. Cookie 失败则尝试密码登录
             if not logged_in:
                 logged_in = login_by_password(sb)
 
@@ -498,7 +599,6 @@ def main():
                 send_telegram("⚠️ ACLClouds 登录失败（Cookie + 密码均失败），请检查 ACL_COOKIE / EMAIL / PASSWORD")
                 return
 
-            # ========== 登录成功后强制自动获取并更新 Cookie ==========
             print("登录成功，开始提取并更新最新 Cookie...")
             cookie_updated = False
             try:
@@ -506,10 +606,8 @@ def main():
             except Exception as e:
                 print(f"保存Cookie失败: {e}")
 
-            # 执行续期并收集结果
             renew_results = renew_projects(sb)
 
-            # 统一发送一条汇总通知
             cookie_status = "✅ 更新成功" if cookie_updated else "❌ 更新失败"
             summary_lines = [
                 "🇫🇷 ACLClouds 自动任务汇总",
