@@ -519,12 +519,12 @@ def renew_projects(sb):
             sb.save_screenshot("02_after_click.png")
             print("已保存截图: 02_after_click.png")
 
-            # ==================== 通用 Anti-bot 破解（支持任意随机词） ====================
+            # ==================== 通用 Anti-bot 破解 ====================
             print(f"[{name}] 开始自动破解 Anti-bot 验证...")
             try:
                 sb.sleep(2)
 
-                # ---------- 第一阶段：点击自定义复选框 ----------
+                # 第一阶段
                 captcha_selectors = [
                     'div.auth-captcha-checkbox',
                     '.auth-captcha-checkbox',
@@ -551,21 +551,16 @@ def renew_projects(sb):
                 sb.save_screenshot("02b_after_checkbox.png")
                 print("已保存截图: 02b_after_checkbox.png")
 
-                # ---------- 第二阶段：动态提取 “Click on XXX” 并点击 ----------
+                # 第二阶段：提取目标词
                 print("  → 正在识别第二阶段随机目标...")
-
-                # 获取弹窗区域文字
                 body_text = sb.get_text("body")
                 
-                # 用正则提取 “Click on XXX” 后面的单词（支持大小写、空格、加粗等）
                 target = None
                 match = re.search(r'Click\s+on\s+([A-Za-zÀ-ÿ]+)', body_text, re.IGNORECASE)
                 if match:
                     target = match.group(1).strip()
                     print(f"  → 成功识别到目标单词: 【{target}】")
                 else:
-                    # 备用方案：在常见位置找
-                    print("  → 正则未匹配到，尝试备用提取...")
                     for line in body_text.splitlines():
                         if "click on" in line.lower():
                             parts = line.lower().split("click on")
@@ -575,51 +570,49 @@ def renew_projects(sb):
                                 break
 
                 if target:
+                    print(f"  → 开始精准点击包含【{target}】的按钮卡片...")
                     clicked_target = False
 
-                    # 方法1：Selenium 精确点击
-                    try:
-                        elements = sb.find_elements("button, div, span, a")
-                        for el in elements:
-                            try:
-                                text = el.text.strip()
-                                if text.lower() == target.lower():
-                                    el.click()
-                                    print(f"  → 已点击目标选项: {target}")
-                                    clicked_target = True
-                                    break
-                            except Exception:
-                                continue
-                    except Exception as e:
-                        print(f"  → Selenium 点击异常: {e}")
-
-                    # 方法2：JS 强制点击（更可靠）
-                    if not clicked_target:
-                        try:
-                            sb.execute_script(f"""
-                                const target = "{target}".toLowerCase();
-                                const elements = document.querySelectorAll('button, div, span, a');
-                                for (let el of elements) {{
-                                    if (el.innerText && el.innerText.trim().toLowerCase() === target) {{
-                                        el.scrollIntoView({{block: 'center'}});
-                                        el.click();
-                                        return true;
+                    # 更精准的 JS 点击：找到包含目标文字的可点击父元素
+                    result = sb.execute_script(f"""
+                        const target = "{target}".toLowerCase();
+                        const candidates = document.querySelectorAll('button, div, span, a, [role="button"]');
+                        
+                        for (let el of candidates) {{
+                            const text = (el.innerText || el.textContent || "").trim().toLowerCase();
+                            if (text === target) {{
+                                // 优先点击自身
+                                el.scrollIntoView({{block: 'center', behavior: 'smooth'}});
+                                el.click();
+                                
+                                // 同时尝试点击父元素（更可能是真正的按钮卡片）
+                                let parent = el.parentElement;
+                                for (let i = 0; i < 3; i++) {{
+                                    if (parent) {{
+                                        parent.click();
+                                        parent = parent.parentElement;
                                     }}
                                 }}
-                                return false;
-                            """)
-                            print(f"  → 已使用 JS 点击目标选项: {target}")
-                            clicked_target = True
-                        except Exception as e:
-                            print(f"  → JS 点击目标失败: {e}")
+                                return "clicked: " + text;
+                            }}
+                        }}
+                        return "not found";
+                    """)
+                    print(f"  → JS 点击结果: {result}")
 
-                    if clicked_target:
-                        sb.sleep(6)
-                        sb.save_screenshot("02c_after_target.png")
-                        print("已保存截图: 02c_after_target.png")
+                    if "clicked" in str(result):
+                        clicked_target = True
+                        print(f"  → 已成功点击目标选项: {target}")
                     else:
-                        print("  → 未能成功点击目标选项")
-                        sb.save_screenshot("02c_failed_click.png")
+                        print("  → 未能定位到目标选项")
+
+                    sb.sleep(6)
+                    sb.save_screenshot("02c_after_target.png")
+                    print("已保存截图: 02c_after_target.png")
+
+                    # 额外等待，看弹窗是否消失
+                    sb.sleep(3)
+
                 else:
                     print("  → 完全未能识别出目标单词")
                     sb.save_screenshot("02c_no_target.png")
