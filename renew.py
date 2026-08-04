@@ -329,25 +329,34 @@ def find_elements(root, selector):
     return root.find_elements(by, selector)
 
 def find_renew_buttons(root):
+    """只匹配真正带有 Renew / Renouveler 文字的按钮，排除纯图标按钮"""
     selectors = [
-        'button:contains("Renouveler")',
+        # 最精准：必须同时有文字
+        '//button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renew") and not(.//svg[contains(@data-icon, "sync")])]',
+        '//button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouveler") and not(.//svg[contains(@data-icon, "sync")])]',
+        '//a[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renew")]',
+        '//a[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouveler")]',
+        
+        # 备用
         'button:contains("Renew")',
-        'a:contains("Renouveler")',
+        'button:contains("Renouveler")',
         'a:contains("Renew")',
-        ".projects-renew-btn",
-        './/button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renew")]',
-        './/button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouveler")]',
-        './/button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "reactivate")]',
-        './/*[(@role="button" or self::a) and contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renew")]',
-        './/*[(@role="button" or self::a) and contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouveler")]',
+        'a:contains("Renouveler")',
     ]
+    
     buttons = []
     for selector in selectors:
         try:
-            buttons.extend(find_elements(root, selector))
+            found = find_elements(root, selector)
+            for btn in found:
+                text = element_text(btn).lower()
+                # 必须包含文字，且不能是纯图标
+                if ("renew" in text or "renouveler" in text) and len(text) > 2:
+                    buttons.append(btn)
         except Exception:
             continue
-    return unique_elements([b for b in buttons if element_text(b) or b.is_displayed()])
+            
+    return unique_elements(buttons)
 
 def find_project_cards(sb):
     candidate_selectors = [
