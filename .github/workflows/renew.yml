@@ -80,8 +80,8 @@ jobs:
           path: |
             01_before_click.png
             02_after_click.png
+            02b_after_checkbox.png
             03_after_refresh.png
-            renew_result.png
           retention-days: 3
 
       - name: 🧹 Cleanup Old Workflow Runs
