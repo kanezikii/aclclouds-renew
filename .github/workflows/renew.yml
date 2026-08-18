@@ -63,6 +63,7 @@ jobs:
           EMAIL_2: ${{ secrets.EMAIL_2 }}
           PASSWORD_2: ${{ secrets.PASSWORD_2 }}
           ACL_COOKIE_2: ${{ secrets.ACL_COOKIE_2 }}
+          
           GH_PAT: ${{ secrets.GH_PAT }}
           GH_OWNER: ${{ secrets.GH_OWNER }}
           GH_REPO: ${{ secrets.GH_REPO }}
