@@ -54,15 +54,20 @@ jobs:
 
       - name: 🚀 Run Renew Script
         env:
-          ACL_COOKIE: ${{ secrets.ACL_COOKIE }}
+          # 账号1
           EMAIL: ${{ secrets.EMAIL }}
           PASSWORD: ${{ secrets.PASSWORD }}
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          # 自动更新GitHub Secret 所需
+          ACL_COOKIE: ${{ secrets.ACL_COOKIE }}
+          
+          # 账号2
+          EMAIL_2: ${{ secrets.EMAIL_2 }}
+          PASSWORD_2: ${{ secrets.PASSWORD_2 }}
+          ACL_COOKIE_2: ${{ secrets.ACL_COOKIE_2 }}
           GH_PAT: ${{ secrets.GH_PAT }}
           GH_OWNER: ${{ secrets.GH_OWNER }}
           GH_REPO: ${{ secrets.GH_REPO }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           # 如需代理可自行开启
           # IS_PROXY: "true"
           # S5_PROXY: "socks5://127.0.0.1:1080"
