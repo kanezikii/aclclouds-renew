@@ -11,16 +11,12 @@ from selenium.common.exceptions import ElementClickInterceptedException, WebDriv
 from selenium.webdriver.common.by import By
 from zoneinfo import ZoneInfo
 
-# ===================== 配置 =====================
-EMAIL = os.getenv('EMAIL') or ""
-PASSWORD = os.getenv('PASSWORD') or ""
-ACL_COOKIE = os.getenv('ACL_COOKIE') or ""
+# ===================== 基础配置 =====================
 TG_CHAT_ID = os.getenv('TG_CHAT_ID') or ""
 TG_BOT_TOKEN = os.getenv('TG_BOT_TOKEN') or ""
 GH_PAT = os.getenv('GH_PAT') or ""
 GH_OWNER = os.getenv('GH_OWNER') or ""
 GH_REPO = os.getenv('GH_REPO') or ""
-GH_SECRET_NAME = "ACL_COOKIE"
 
 LOGIN_PATH = '/auth/login'
 BASE_URL = 'https://dash.aclclouds.com'
@@ -39,7 +35,7 @@ def send_telegram(message):
         data = {'chat_id': TG_CHAT_ID, 'text': message}
         try:
             requests.post(url, data=data, timeout=10)
-            print(f"Telegram sent: {message[:50]}...")
+            print(f"Telegram sent: {message[:60]}...")
         except Exception as e:
             print(f"Failed to send Telegram: {e}")
     else:
@@ -141,7 +137,7 @@ def update_github_secret(secret_name, secret_value):
             timeout=15,
         )
         if result.status_code in [201, 204]:
-            print("✅ Github Secret 更新成功")
+            print(f"✅ Github Secret [{secret_name}] 更新成功")
             return True
         else:
             print(f"Github Secret 更新返回状态码: {result.status_code}")
@@ -149,7 +145,7 @@ def update_github_secret(secret_name, secret_value):
         print(f"Github更新异常: {e}")
     return False
 
-def save_new_cookie(sb):
+def save_new_cookie(sb, secret_name):
     try:
         cookie = extract_acl_cookie(sb)
         if not cookie:
@@ -157,22 +153,19 @@ def save_new_cookie(sb):
             return False
         print("最新Cookie:")
         print(cookie[:180] + "..." if len(cookie) > 180 else cookie)
-        return update_github_secret(GH_SECRET_NAME, cookie)
+        return update_github_secret(secret_name, cookie)
     except Exception as e:
         print(f"保存Cookie时发生异常: {e}")
         return False
 
 # ===================== 登录相关 =====================
-def is_login_page(sb):
-    return LOGIN_PATH in sb.get_current_url()
-
 def is_logged_in(sb):
     current_url = sb.get_current_url()
     return BASE_URL in current_url and LOGIN_PATH not in current_url
 
-def login_by_cookie(sb):
-    if not ACL_COOKIE:
-        print("没有 ACL_COOKIE，跳过 Cookie 登录")
+def login_by_cookie(sb, cookie_str):
+    if not cookie_str:
+        print("没有 Cookie，跳过 Cookie 登录")
         return False
     print("尝试 Cookie 登录...")
     try:
@@ -181,7 +174,7 @@ def login_by_cookie(sb):
         sb.driver.delete_all_cookies()
         sb.sleep(1)
 
-        cookies = parse_cookie_string(ACL_COOKIE)
+        cookies = parse_cookie_string(cookie_str)
         print(f"准备写入 {len(cookies)} 个Cookie")
         for name, value in cookies.items():
             try:
@@ -421,10 +414,10 @@ def extract_duration_like(text):
         return ''
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     for idx, line in enumerate(lines):
-        if re.search(r'expires\s+in|剩余|还有', line, re.I) and idx + 1 < len(lines):
+        if re.search(r'expires\s+in|剩余|还有|temps restant', line, re.I) and idx + 1 < len(lines):
             return f"{line} {lines[idx + 1]}"
     match = re.search(
-        r'(?:expires\s+in\s*)?\d+\s*(?:d|day|days|j|天|日)\s*\d*\s*(?:h|hour|hours|小时)?',
+        r'(?:expires\s+in\s*|temps restant\s*:?\s*)?\d+\s*(?:d|day|days|j|天|日)\s*\d*\s*(?:h|hour|hours|小时)?',
         text,
         re.I,
     )
@@ -452,7 +445,7 @@ def get_project_name(card, idx):
             continue
     for line in element_text(card).splitlines():
         line = line.strip()
-        if line and len(line) <= 80 and not extract_duration_like(line) and not re.search(r'renew|reactivate|suspended|expiry|expire|valid|续期|重新激活|恢复|暂停|过期|到期', line, re.I):
+        if line and len(line) <= 80 and not extract_duration_like(line) and not re.search(r'renew|reactivate|suspended|expiry|expire|valid|续期|重新激活|恢复|暂停|过期|到期|temps restant', line, re.I):
             return line
     return f"项目 #{idx}"
 
@@ -465,7 +458,7 @@ def get_project_expiry(card):
         './/*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "expiry")]',
         './/*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "expire")]',
         './/*[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "valid")]',
-        './/*[contains(normalize-space(.), "过期") or contains(normalize-space(.), "到期")]',
+        './/*[contains(normalize-space(.), "过期") or contains(normalize-space(.), "到期") or contains(normalize-space(.), "Temps restant")]',
     ]
     for selector in selectors:
         try:
@@ -488,6 +481,7 @@ def get_renewal_available_note(card):
     text = element_text(card)
     patterns = [
         r'Renewal\s+will\s+be\s+available[^\n]*',
+        r'Le renouvellement sera disponible[^\n]*',
         r'可续期[^\n]*',
         r'续期[^\n]*前[^\n]*',
     ]
@@ -579,7 +573,6 @@ def has_renew_antibot_modal(sb):
     return False
 
 def click_captcha_checkbox(sb, label='验证码', timeout=10):
-    """点击 ACLClouds 页面上的人机验证复选框，并处理图形验证码挑战。"""
     selectors = [
         'div.auth-captcha-inner[role="checkbox"]',
         '//div[contains(., "Anti-bot confirmation")]//*[@role="checkbox"]',
@@ -621,7 +614,6 @@ def click_captcha_checkbox(sb, label='验证码', timeout=10):
         return False
 
 def handle_captcha_challenge(sb, label='验证码', timeout=20):
-    """处理图形验证码挑战：先等待挑战加载，再尝试点击对应图像。"""
     start_time = time.time()
     challenge = None
     last_error = None
@@ -710,25 +702,6 @@ def handle_captcha_challenge(sb, label='验证码', timeout=20):
         print(f"{label} 未找到可点击的选项")
         return False
 
-    matched = None
-    if target:
-        for opt in options:
-            opt_text = (opt.text or '').strip()
-            if not opt_text:
-                try:
-                    img = opt.find_element(By.TAG_NAME, 'img')
-                    opt_text = (img.get_attribute('alt') or '').strip()
-                except Exception:
-                    pass
-            if not opt_text:
-                try:
-                    opt_text = (opt.get_attribute('aria-label') or '').strip()
-                except Exception:
-                    pass
-            if target.lower() in opt_text.lower():
-                matched = opt
-                break
-
     attempts = 0
     max_attempts = 8
     while attempts < max_attempts:
@@ -807,10 +780,11 @@ def mask_email(email):
         masked_local = f"{local[:2]}****{local[-2:]}"
     return f"{masked_local}@{domain}"
 
-def build_success_message(project_name, old_expiry, new_expiry):
-    masked_email = mask_email(EMAIL)
+def build_success_message(account_name, project_name, old_expiry, new_expiry, email):
+    masked_email = mask_email(email)
     lines = [
         "🇫🇷 Aclclouds 续期通知",
+        f"账号: {account_name}",
         "",
         "✅ 续期成功",
         f"⏱️ 新过期时间: {new_expiry}",
@@ -819,10 +793,11 @@ def build_success_message(project_name, old_expiry, new_expiry):
     ]
     return "\n".join(lines)
 
-def build_not_yet_due_message(project_name, expiry):
-    masked_email = mask_email(EMAIL)
+def build_not_yet_due_message(account_name, project_name, expiry, email):
+    masked_email = mask_email(email)
     lines = [
         "🇫🇷 Aclclouds 续期通知",
+        f"账号: {account_name}",
         "",
         "⏳ 未到续期时间",
         f"⏱️ 当前过期时间: {expiry}",
@@ -831,10 +806,11 @@ def build_not_yet_due_message(project_name, expiry):
     ]
     return "\n".join(lines)
 
-def build_unconfirmed_message(project_name, old_expiry, new_expiry, result_note):
-    masked_email = mask_email(EMAIL)
+def build_unconfirmed_message(account_name, project_name, old_expiry, new_expiry, result_note, email):
+    masked_email = mask_email(email)
     lines = [
         "🇫🇷 Aclclouds 续期通知",
+        f"账号: {account_name}",
         "",
         f"❌ 续期状态未确认: {project_name}",
         f"👤 登录账户: {masked_email}",
@@ -848,7 +824,6 @@ def build_unconfirmed_message(project_name, old_expiry, new_expiry, result_note)
     return "\n".join(lines)
 
 def handle_renew_antibot(sb, project_name):
-    """Renew 后如果弹出 Anti-bot confirmation，则点击确认。"""
     modal_selectors = [
         '//div[contains(., "Anti-bot confirmation")]',
         '//div[contains(., "Confirm you are human")]',
@@ -902,7 +877,6 @@ def fill_input(sb, selector, value, label, timeout=15):
     return entered_value == value
 
 def login(sb, email, password):
-    """执行密码登录，返回是否成功"""
     print("开始密码登录流程...")
     if not fill_input(sb, '#username', email, '邮箱'):
         print("⚠️ 邮箱仍未能正确填入，可能页面有动态行为。")
@@ -968,14 +942,126 @@ def get_current_ip(proxy_server: str = "") -> str:
     response.raise_for_status()
     return response.text.strip()
 
+def process_account(sb, account):
+    """处理单个账号的完整流程"""
+    name = account["name"]
+    email = account["email"]
+    password = account["password"]
+    cookie = account["cookie"]
+    secret_name = account["secret_name"]
+
+    print(f"\n{'='*20} 开始处理账号: {name} {'='*20}")
+    print(f"邮箱: {mask_email(email)}")
+
+    # 登录优先级：Cookie → 密码
+    logged_in = False
+
+    if cookie:
+        logged_in = login_by_cookie(sb, cookie)
+
+    if not logged_in:
+        if not email or not password:
+            print(f"❌ 账号 {name} 未配置邮箱或密码，且 Cookie 登录失败")
+            send_telegram(f"⚠️ 账号 {name} 登录失败（无有效 Cookie 且无邮箱密码）")
+            return
+        sb.open(LOGIN_URL)
+        sb.wait_for_ready_state_complete()
+        time.sleep(2)
+        logged_in = login(sb, email, password)
+
+    if not logged_in:
+        print(f"❌ 账号 {name} 登录失败（Cookie + 密码均失败）")
+        send_telegram(f"⚠️ 账号 {name} 登录失败（Cookie + 密码均失败）")
+        return
+
+    # 登录成功后更新对应 Cookie Secret
+    print(f"账号 {name} 登录成功，开始提取并更新 Cookie → {secret_name}")
+    cookie_updated = save_new_cookie(sb, secret_name)
+    cookie_status = "✅ 更新成功" if cookie_updated else "❌ 更新失败"
+
+    # 进入项目页执行续期
+    sb.open(PROJECTS_URL)
+    sb.wait_for_ready_state_complete()
+    time.sleep(3)
+
+    cards = find_project_cards(sb)
+    if not cards:
+        print(f"❌ 账号 {name} 未找到项目卡片")
+        log_projects_page_diagnostics(sb)
+        send_telegram(f"⚠️ 账号 {name} 未找到项目卡片\n🍪 Cookie状态: {cookie_status}")
+        return
+
+    print(f"账号 {name} 找到 {len(cards)} 个项目卡片")
+
+    for idx, card in enumerate(cards, 1):
+        try:
+            project_name = get_project_name(card, idx)
+            old_expiry = get_project_expiry(card)
+            print(f"[{project_name}] 当前过期: {old_expiry}")
+
+            renew_btn = find_renew_buttons(card)
+            if renew_btn:
+                action_label = get_action_button_label(renew_btn[0])
+                safe_click_element(sb, renew_btn[0], f"[{project_name}] {action_label}按钮")
+                print(f"[{project_name}] 点击 {action_label}...")
+                handle_renew_antibot(sb, project_name)
+                success, new_expiry, result_note = wait_for_renew_result(sb, idx, timeout=30)
+                if success:
+                    print(f"续期成功！状态: {result_note}，新过期: {new_expiry}")
+                    msg = build_success_message(name, project_name, old_expiry, new_expiry, email)
+                    send_telegram(msg)
+                else:
+                    msg = build_unconfirmed_message(name, project_name, old_expiry, new_expiry, result_note, email)
+                    send_telegram(msg)
+            else:
+                note = get_renew_note(card)
+                print(f"无 Renew 按钮，提示: {note}")
+                msg = build_not_yet_due_message(name, project_name, old_expiry, email)
+                send_telegram(msg)
+        except Exception as e:
+            print(f"处理卡片 {idx} 出错: {e}")
+            send_telegram(f"🇫🇷 Aclclouds 续期通知\n账号: {name}\n\n⚠️ 处理出错: {str(e)}")
+
+    print(f"账号 {name} 处理完成。🍪 Cookie 状态: {cookie_status}")
+
 def main():
     IS_PROXY = os.environ.get("IS_PROXY", "false").lower() == "true"
     PROXY_SERVER = os.getenv('S5_PROXY') or os.getenv('PROXY_SERVER') or "socks://127.0.0.1:1080"
 
     print("=" * 50)
-    print("ACLClouds 自动续期启动")
+    print("ACLClouds 自动续期启动（多账号）")
     print("运行时间:", beijing_time_str())
     print("=" * 50)
+
+    # ========== 从 Secrets 读取账号列表 ==========
+    accounts = []
+
+    # 账号1
+    if os.getenv("EMAIL") or os.getenv("ACL_COOKIE"):
+        accounts.append({
+            "name": "账号1",
+            "email": os.getenv("EMAIL") or "",
+            "password": os.getenv("PASSWORD") or "",
+            "cookie": os.getenv("ACL_COOKIE") or "",
+            "secret_name": "ACL_COOKIE",
+        })
+
+    # 账号2
+    if os.getenv("EMAIL_2") or os.getenv("ACL_COOKIE_2"):
+        accounts.append({
+            "name": "账号2",
+            "email": os.getenv("EMAIL_2") or "",
+            "password": os.getenv("PASSWORD_2") or "",
+            "cookie": os.getenv("ACL_COOKIE_2") or "",
+            "secret_name": "ACL_COOKIE_2",
+        })
+
+    if not accounts:
+        print("❌ 没有配置任何账号，请检查 Secrets")
+        send_telegram("❌ 没有配置任何账号，请检查 Secrets")
+        return
+
+    print(f"共加载 {len(accounts)} 个账号")
 
     sb_options = {'uc': True, 'headless': False}
     if IS_PROXY:
@@ -994,83 +1080,14 @@ def main():
 
             sb.set_window_size(1366, 768)
 
-            # ========== 登录优先级：Cookie → 密码 ==========
-            logged_in = False
-
-            # 1. 优先尝试 Cookie 登录
-            if ACL_COOKIE:
-                logged_in = login_by_cookie(sb)
-
-            # 2. Cookie 失败则用密码登录
-            if not logged_in:
-                if not EMAIL or not PASSWORD:
-                    print("❌ 未配置 EMAIL 或 PASSWORD，无法执行密码登录。")
-                    send_telegram("⚠️ 未配置 EMAIL 或 PASSWORD，且 Cookie 登录失败。")
-                    return
-                sb.open(LOGIN_URL)
-                sb.wait_for_ready_state_complete()
-                time.sleep(2)
-                logged_in = login(sb, EMAIL, PASSWORD)
-
-            if not logged_in:
-                print("❌ 登录失败（Cookie + 密码均失败）")
-                send_telegram("⚠️ ACLClouds 登录失败（Cookie + 密码均失败）")
-                return
-
-            # ========== 登录成功后强制更新 Cookie ==========
-            print("登录成功，开始提取并更新最新 Cookie...")
-            cookie_updated = save_new_cookie(sb)
-            cookie_status = "✅ 更新成功" if cookie_updated else "❌ 更新失败"
-
-            # ========== 进入项目页执行续期 ==========
-            sb.open(PROJECTS_URL)
-            sb.wait_for_ready_state_complete()
-            time.sleep(3)
-
-            cards = find_project_cards(sb)
-            if not cards:
-                print("❌ 未找到项目卡片。")
-                log_projects_page_diagnostics(sb)
-                send_telegram(f"⚠️ 未找到项目卡片\n🍪 Cookie状态: {cookie_status}")
-                return
-
-            print(f"找到 {len(cards)} 个项目卡片。")
-            results = []
-
-            for idx, card in enumerate(cards, 1):
+            for account in accounts:
                 try:
-                    project_name = get_project_name(card, idx)
-                    old_expiry = get_project_expiry(card)
-                    print(f"[{project_name}] 当前过期: {old_expiry}")
-
-                    renew_btn = find_renew_buttons(card)
-                    if renew_btn:
-                        action_label = get_action_button_label(renew_btn[0])
-                        safe_click_element(sb, renew_btn[0], f"[{project_name}] {action_label}按钮")
-                        print(f"[{project_name}] 点击 {action_label}...")
-                        handle_renew_antibot(sb, project_name)
-                        success, new_expiry, result_note = wait_for_renew_result(sb, idx, timeout=30)
-                        if success:
-                            print(f"续期成功！状态: {result_note}，新过期: {new_expiry}")
-                            msg = build_success_message(project_name, old_expiry, new_expiry)
-                            results.append(msg)
-                            send_telegram(msg)
-                        else:
-                            msg = build_unconfirmed_message(project_name, old_expiry, new_expiry, result_note)
-                            results.append(msg)
-                            send_telegram(msg)
-                    else:
-                        note = get_renew_note(card)
-                        print(f"无 Renew 按钮，提示: {note}")
-                        msg = build_not_yet_due_message(project_name, old_expiry)
-                        results.append(msg)
-                        send_telegram(msg)
+                    process_account(sb, account)
                 except Exception as e:
-                    print(f"处理卡片 {idx} 出错: {e}")
-                    send_telegram(f"🇫🇷 Aclclouds 续期通知\n\n⚠️ 处理出错: {str(e)}")
+                    print(f"账号 {account['name']} 处理过程发生异常: {e}")
+                    send_telegram(f"❌ 账号 {account['name']} 处理异常\n{str(e)}")
 
-            print("所有项目处理完成。")
-            print(f"🍪 Cookie 状态: {cookie_status}")
+            print("\n全部账号处理完成")
 
         except Exception as e:
             print("程序异常:", e)
