@@ -638,6 +638,7 @@ def build_account_summary(account_name, email, cookie_status, results):
     return "\n".join(lines)
 
 def process_account(sb, account):
+    """处理单个账号，返回结果列表（不发送Telegram）"""
     name = account["name"]
     email = account["email"]
     password = account["password"]
@@ -649,28 +650,32 @@ def process_account(sb, account):
 
     results = []
     cookie_status = "未更新"
+    login_success = False
 
+    # 登录
     logged_in = False
     if cookie:
         logged_in = login_by_cookie(sb, cookie)
 
     if not logged_in:
         if not email or not password:
-            send_telegram(f"❌ 账号 {name} 登录失败（无 Cookie 且无邮箱密码）")
-            return
+            results.append("❌ 登录失败（无 Cookie 且无邮箱密码）")
+            return name, email, cookie_status, results
         sb.open(LOGIN_URL)
         sb.wait_for_ready_state_complete()
         time.sleep(2)
         logged_in = login(sb, email, password)
 
     if not logged_in:
-        send_telegram(f"❌ 账号 {name} 登录失败（Cookie + 密码均失败）")
-        return
+        results.append("❌ 登录失败（Cookie + 密码均失败）")
+        return name, email, cookie_status, results
 
+    login_success = True
     print(f"账号 {name} 登录成功，更新 Cookie → {secret_name}")
     cookie_updated = save_new_cookie(sb, secret_name)
     cookie_status = "✅ 更新成功" if cookie_updated else "❌ 更新失败"
 
+    # 进入项目页
     sb.open(PROJECTS_URL)
     sb.wait_for_ready_state_complete()
     time.sleep(4)
@@ -678,8 +683,7 @@ def process_account(sb, account):
     cards = find_project_cards(sb)
     if not cards:
         results.append("未找到任何项目")
-        send_telegram(build_account_summary(name, email, cookie_status, results))
-        return
+        return name, email, cookie_status, results
 
     print(f"找到 {len(cards)} 个项目")
     for idx, card in enumerate(cards, 1):
@@ -687,6 +691,12 @@ def process_account(sb, account):
             project_name = get_project_name(card, idx)
             old_expiry = get_project_expiry(card)
             print(f"[{project_name}] 当前过期: {old_expiry}")
+
+            # 过滤明显不是项目的卡片
+            if project_name.lower() in ['ram', 'storage', 'stockage', 'expires in', 'temps restant', '未知']:
+                continue
+            if len(project_name) < 2:
+                continue
 
             renew_btns = find_renew_buttons(card)
             if renew_btns:
@@ -696,18 +706,17 @@ def process_account(sb, account):
                 handle_renew_antibot(sb, project_name)
                 success, new_expiry, note = wait_for_renew_result(sb, idx, timeout=25)
                 if success:
-                    results.append(f"✅ {project_name} 续期成功\n   原到期: {old_expiry}\n   新到期: {new_expiry}")
+                    results.append(f"✅ {project_name} 续期成功\n   原到期: {old_expiry} → 新到期: {new_expiry}")
                 else:
-                    results.append(f"❌ {project_name} 续期未确认\n   原到期: {old_expiry}\n   当前: {new_expiry}")
+                    results.append(f"❌ {project_name} 续期未确认\n   当前到期: {old_expiry}")
             else:
                 note = get_renew_note(card)
-                results.append(f"⏳ {project_name} 未到续期时间\n   当前到期: {old_expiry}\n   提示: {note}")
+                results.append(f"⏳ {project_name} 未到续期时间\n   当前到期: {old_expiry}")
         except Exception as e:
             results.append(f"⚠️ 项目处理异常: {e}")
 
-    summary = build_account_summary(name, email, cookie_status, results)
-    send_telegram(summary)
-    print(f"账号 {name} 处理完成")
+    return name, email, cookie_status, results
+
 
 def main():
     IS_PROXY = os.environ.get("IS_PROXY", "false").lower() == "true"
@@ -748,6 +757,8 @@ def main():
         sb_options['proxy'] = PROXY_SERVER
         print(f"代理: {PROXY_SERVER}")
 
+    all_summaries = []  # 收集所有账号结果
+
     with SB(**sb_options) as sb:
         try:
             print("当前出口IP:", get_current_ip(PROXY_SERVER if IS_PROXY else ""))
@@ -755,12 +766,47 @@ def main():
 
             for account in accounts:
                 try:
-                    process_account(sb, account)
+                    name, email, cookie_status, results = process_account(sb, account)
+                    all_summaries.append({
+                        "name": name,
+                        "email": email,
+                        "cookie_status": cookie_status,
+                        "results": results
+                    })
                 except Exception as e:
                     print(f"账号 {account['name']} 异常: {e}")
-                    send_telegram(f"❌ 账号 {account['name']} 处理异常\n{str(e)}")
+                    all_summaries.append({
+                        "name": account["name"],
+                        "email": account.get("email", ""),
+                        "cookie_status": "异常",
+                        "results": [f"❌ 处理异常: {str(e)}"]
+                    })
 
-            print("全部账号处理完成")
+            # ========== 只在这里发送一条总汇总消息 ==========
+            final_lines = [
+                "🇫🇷 ACLClouds 自动续期总汇总",
+                f"⏱️ 运行时间: {beijing_time_str()}",
+                f"共处理 {len(all_summaries)} 个账号",
+                ""
+            ]
+
+            for acc in all_summaries:
+                final_lines.append(f"────────────")
+                final_lines.append(f"📌 账号: {acc['name']}")
+                final_lines.append(f"登录账户: {mask_email(acc['email'])}")
+                final_lines.append(f"🍪 Cookie状态: {acc['cookie_status']}")
+                final_lines.append("")
+                if acc['results']:
+                    for i, r in enumerate(acc['results'], 1):
+                        final_lines.append(f"{i}. {r}")
+                else:
+                    final_lines.append("无项目结果")
+                final_lines.append("")
+
+            final_lines.append("✅ 全部账号任务完成")
+            send_telegram("\n".join(final_lines))
+            print("全部账号处理完成，已发送一条总汇总")
+
         except Exception as e:
             print("程序异常:", e)
             send_telegram(f"❌ 脚本异常\n{str(e)}")
