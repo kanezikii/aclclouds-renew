@@ -305,6 +305,7 @@ def fill_input(sb, selector, value, label, timeout=15):
         return False
 
 def click_captcha_checkbox(sb, label='验证码', timeout=10):
+    """点击复选框 + 处理图形验证码（登录和续期共用）"""
     selectors = [
         'div.auth-captcha-inner[role="checkbox"]',
         '//div[contains(., "Je ne suis pas un robot")]//*[@role="checkbox"]',
@@ -313,14 +314,12 @@ def click_captcha_checkbox(sb, label='验证码', timeout=10):
         'div.auth-captcha-checkbox',
     ]
     clicked = False
-    used_selector = None
     for sel in selectors:
         try:
             sb.wait_for_element_visible(sel, timeout=timeout)
             scroll_to_selector(sb, sel)
             sb.uc_click(sel)
             sb.sleep(1.5)
-            used_selector = sel
             clicked = True
             print(f"{label} 已点击复选框")
             break
@@ -331,11 +330,10 @@ def click_captcha_checkbox(sb, label='验证码', timeout=10):
         return False
 
     sb.sleep(3)
-    if handle_captcha_challenge(sb, label, timeout=20):
-        return True
-    return False
+    return handle_captcha_challenge(sb, label, timeout=20)
 
 def handle_captcha_challenge(sb, label='验证码', timeout=20):
+    """处理 “Click on XXX” 图形验证码"""
     start = time.time()
     challenge_selectors = [
         '.auth-captcha-challenge',
@@ -376,7 +374,7 @@ def handle_captcha_challenge(sb, label='验证码', timeout=20):
     if not challenge:
         return True
 
-    # 提取目标
+    # 提取目标文字
     target = ''
     try:
         prompt = challenge.find_element(By.CSS_SELECTOR, '.auth-captcha-prompt strong')
@@ -440,7 +438,6 @@ def login(sb, email, password):
     """密码登录（支持法语 Se connecter）"""
     print("开始密码登录流程...")
     if not fill_input(sb, '#username', email, '邮箱'):
-        # 尝试其他选择器
         for sel in ['input[name="email"]', 'input[type="email"]', 'input[placeholder*="Email"]']:
             if fill_input(sb, sel, email, '邮箱'):
                 break
@@ -449,7 +446,6 @@ def login(sb, email, password):
             if fill_input(sb, sel, password, '密码'):
                 break
 
-    # 处理验证码
     captcha_ok = click_captcha_checkbox(sb, '登录验证码')
     if not captcha_ok:
         print("⚠️ 登录验证码未完成，仍尝试点击登录按钮")
@@ -457,7 +453,6 @@ def login(sb, email, password):
     sb.sleep(1)
     login_page_url = sb.get_current_url()
 
-    # 支持法语和英语登录按钮
     submit_selectors = [
         'button[type="submit"]',
         '//button[contains(text(), "Se connecter")]',
@@ -465,7 +460,6 @@ def login(sb, email, password):
         '//button[contains(text(), "Log in")]',
         '//button[contains(text(), "Connexion")]',
         'div.auth-submit-btn',
-        '//button[contains(@class, "btn")]',
     ]
 
     clicked = False
@@ -610,35 +604,47 @@ def wait_for_renew_result(sb, idx, timeout=30):
     return False, expiry, ''
 
 def handle_renew_antibot(sb, project_name):
-    try:
-        if sb.is_element_visible('//div[contains(., "Anti-bot") or contains(., "Je ne suis pas un robot")]'):
-            print(f"[{project_name}] 检测到续期人机验证")
-            return click_captcha_checkbox(sb, '续期验证码')
-    except Exception:
-        pass
-    return False
-
-def build_account_summary(account_name, email, cookie_status, results):
-    lines = [
-        "🇫🇷 ACLClouds 自动续期汇总",
-        f"账号: {account_name}",
-        f"登录账户: {mask_email(email)}",
-        f"🍪 Cookie状态: {cookie_status}",
-        f"⏱️ 运行时间: {beijing_time_str()}",
-        "",
+    """点击续期后，执行和登录时完全一样的图形验证码流程"""
+    print(f"[{project_name}] 检查是否出现续期图形验证码...")
+    
+    sb.sleep(2.5)
+    
+    has_captcha = False
+    check_selectors = [
+        'div.auth-captcha-inner[role="checkbox"]',
+        '//div[contains(., "Je ne suis pas un robot")]',
+        '//div[contains(., "I am not a robot")]',
+        '//div[contains(., "Anti-bot confirmation")]',
+        '//div[contains(., "Confirm you are human")]',
+        '.auth-captcha-challenge',
     ]
-    if not results:
-        lines.append("未发现可处理的项目")
+    
+    for sel in check_selectors:
+        try:
+            if sb.is_element_visible(sel):
+                has_captcha = True
+                print(f"[{project_name}] 检测到验证码元素")
+                break
+        except Exception:
+            continue
+    
+    if not has_captcha:
+        print(f"[{project_name}] 未检测到验证码弹窗")
+        return False
+    
+    print(f"[{project_name}] 开始执行完整图形验证码流程（与登录相同）...")
+    success = click_captcha_checkbox(sb, label=f"续期验证码-{project_name}", timeout=12)
+    
+    if success:
+        print(f"[{project_name}] 续期验证码通过")
     else:
-        lines.append("📋 项目结果:")
-        for i, r in enumerate(results, 1):
-            lines.append(f"{i}. {r}")
-    lines.append("")
-    lines.append("✅ 本账号任务完成")
-    return "\n".join(lines)
+        print(f"[{project_name}] 续期验证码未通过")
+    
+    sb.sleep(2)
+    return success
 
 def process_account(sb, account):
-    """处理单个账号，返回结果列表（不发送Telegram）"""
+    """处理单个账号，返回结果（不发送Telegram）"""
     name = account["name"]
     email = account["email"]
     password = account["password"]
@@ -650,7 +656,6 @@ def process_account(sb, account):
 
     results = []
     cookie_status = "未更新"
-    login_success = False
 
     # 登录
     logged_in = False
@@ -670,7 +675,6 @@ def process_account(sb, account):
         results.append("❌ 登录失败（Cookie + 密码均失败）")
         return name, email, cookie_status, results
 
-    login_success = True
     print(f"账号 {name} 登录成功，更新 Cookie → {secret_name}")
     cookie_updated = save_new_cookie(sb, secret_name)
     cookie_status = "✅ 更新成功" if cookie_updated else "❌ 更新失败"
@@ -692,8 +696,9 @@ def process_account(sb, account):
             old_expiry = get_project_expiry(card)
             print(f"[{project_name}] 当前过期: {old_expiry}")
 
-            # 过滤明显不是项目的卡片
-            if project_name.lower() in ['ram', 'storage', 'stockage', 'expires in', 'temps restant', '未知']:
+            # 过滤明显不是真实项目的卡片
+            low_name = project_name.lower()
+            if low_name in ['ram', 'storage', 'stockage', 'expires in', 'temps restant', '未知', 'mon vps']:
                 continue
             if len(project_name) < 2:
                 continue
@@ -703,7 +708,10 @@ def process_account(sb, account):
                 action = get_action_button_label(renew_btns[0])
                 safe_click_element(sb, renew_btns[0], f"{project_name} {action}")
                 print(f"[{project_name}] 点击 {action}")
+                
+                # 点击续期后执行和登录完全一样的验证码流程
                 handle_renew_antibot(sb, project_name)
+                
                 success, new_expiry, note = wait_for_renew_result(sb, idx, timeout=25)
                 if success:
                     results.append(f"✅ {project_name} 续期成功\n   原到期: {old_expiry} → 新到期: {new_expiry}")
@@ -716,7 +724,6 @@ def process_account(sb, account):
             results.append(f"⚠️ 项目处理异常: {e}")
 
     return name, email, cookie_status, results
-
 
 def main():
     IS_PROXY = os.environ.get("IS_PROXY", "false").lower() == "true"
@@ -757,7 +764,7 @@ def main():
         sb_options['proxy'] = PROXY_SERVER
         print(f"代理: {PROXY_SERVER}")
 
-    all_summaries = []  # 收集所有账号结果
+    all_summaries = []
 
     with SB(**sb_options) as sb:
         try:
@@ -782,7 +789,7 @@ def main():
                         "results": [f"❌ 处理异常: {str(e)}"]
                     })
 
-            # ========== 只在这里发送一条总汇总消息 ==========
+            # 只发送一条总汇总
             final_lines = [
                 "🇫🇷 ACLClouds 自动续期总汇总",
                 f"⏱️ 运行时间: {beijing_time_str()}",
@@ -791,7 +798,7 @@ def main():
             ]
 
             for acc in all_summaries:
-                final_lines.append(f"────────────")
+                final_lines.append("────────────")
                 final_lines.append(f"📌 账号: {acc['name']}")
                 final_lines.append(f"登录账户: {mask_email(acc['email'])}")
                 final_lines.append(f"🍪 Cookie状态: {acc['cookie_status']}")
