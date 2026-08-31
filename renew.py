@@ -20,7 +20,13 @@ GH_REPO = os.getenv('GH_REPO') or ""
 LOGIN_PATH = '/auth/login'
 BASE_URL = os.getenv('ACL_BASE_URL') or 'https://aclclouds.com'
 DASH_URL = 'https://dash.aclclouds.com'
-LOGIN_URL = f'{DASH_URL}{LOGIN_PATH}'
+LOGIN_URL = f'{BASE_URL}{LOGIN_PATH}'
+LOGIN_URLS = [
+    f'{BASE_URL}{LOGIN_PATH}',
+    f'{DASH_URL}{LOGIN_PATH}',
+]
+DEFAULT_SERVER_URL_1 = "https://aclclouds.com/server/ff26a127"
+DEFAULT_SERVER_URL_2 = "https://aclclouds.com/server/7dd74194"
 
 
 def beijing_time_str():
@@ -252,7 +258,7 @@ def login_by_cookie(sb, cookie_str):
         return False
     print("尝试 Cookie 登录...")
     try:
-        sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=5)
+        sb.uc_open_with_reconnect(LOGIN_URLS[0], reconnect_time=5)
         sb.sleep(2)
         sb.driver.delete_all_cookies()
         sb.sleep(1)
@@ -441,8 +447,26 @@ def handle_captcha_challenge(sb, label='验证码', timeout=20):
         if not candidate:
             candidate = options[0]
 
-        print(f"{label} 点击选项 #{attempt+1} ...")
-        safe_click_element(sb, candidate, label)
+        print(f"{label} 点击选项 #{attempt+1} (目标: {target}) ...")
+        if target:
+            js_result = sb.execute_script('''
+                const target = (arguments[0] || "").toLowerCase();
+                const buttons = document.querySelectorAll("button.auth-captcha-option, .auth-captcha-option");
+                for (const btn of buttons) {
+                    const text = (btn.innerText || btn.textContent || "").trim().toLowerCase();
+                    if (text && (text === target || text.includes(target) || target.includes(text))) {
+                        btn.scrollIntoView({block: "center"});
+                        btn.click();
+                        return "clicked:" + text;
+                    }
+                }
+                return "not-found:" + buttons.length;
+            ''', target)
+            print(f"{label} JS匹配结果: {js_result}")
+            if not str(js_result).startswith("clicked:"):
+                safe_click_element(sb, candidate, label)
+        else:
+            safe_click_element(sb, candidate, label)
         sb.sleep(2)
 
         try:
@@ -548,19 +572,143 @@ def find_renew_buttons(sb):
     return visible
 
 
+def page_body(sb):
+    try:
+        return sb.driver.find_element(By.TAG_NAME, 'body').text
+    except Exception:
+        return ""
+
+
+def is_error_page(body):
+    low = (body or "").lower()
+    return any(k in low for k in [
+        "something went wrong",
+        "does not exist on this server",
+        "requested resource does not exist",
+        "404",
+        "not found",
+    ])
+
+
+def is_valid_service_page(body):
+    if not body or is_error_page(body):
+        return False
+    low = body.lower()
+    return any(k in low for k in [
+        "time remaining", "temps restant", "expires in",
+        "renew", "renouveler", "start", "restart", "stop",
+        "free plan", "online", "offline"
+    ])
+
+
+def server_url_candidates(server_url):
+    urls = []
+    raw = (server_url or "").strip()
+    if raw:
+        urls.append(raw)
+    sid = ""
+    m = re.search(r"/server/([A-Za-z0-9_-]+)", raw)
+    if m:
+        sid = m.group(1)
+    if sid:
+        urls.extend([
+            f"{BASE_URL}/server/{sid}",
+            f"{DASH_URL}/server/{sid}",
+            f"{BASE_URL}/dashboard/server/{sid}",
+            f"{DASH_URL}/dashboard/server/{sid}",
+            f"{BASE_URL}/servers/{sid}",
+            f"{DASH_URL}/servers/{sid}",
+        ])
+    # 保底：先进入 dashboard 建立会话
+    urls.extend([
+        f"{BASE_URL}/dashboard",
+        f"{DASH_URL}/dashboard",
+    ])
+    seen = set()
+    out = []
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def open_dashboard_session(sb):
+    for url in [f"{BASE_URL}/dashboard", f"{DASH_URL}/dashboard"]:
+        try:
+            print(f"先打开 Dashboard 建立会话: {url}")
+            sb.open(url)
+            sb.wait_for_ready_state_complete()
+            sb.sleep(4)
+            body = page_body(sb)
+            print(f"Dashboard URL: {sb.get_current_url()}")
+            if not is_error_page(body) and ("welcome" in body.lower() or "dashboard" in body.lower() or "renew" in body.lower()):
+                return True
+        except Exception as e:
+            print(f"打开 Dashboard 失败: {e}")
+    return False
+
+
+def click_dashboard_service(sb, server_url):
+    """Dashboard 打不开 /server/id 时，尝试点击对应服务入口。"""
+    sid = ""
+    m = re.search(r"/server/([A-Za-z0-9_-]+)", server_url or "")
+    if m:
+        sid = m.group(1)
+    if not sid:
+        return False
+    try:
+        links = sb.driver.find_elements(By.XPATH, f'//a[contains(@href, "{sid}")]')
+        if not links:
+            links = sb.driver.find_elements(By.XPATH, f'//*[contains(@href, "{sid}")]')
+        for el in links:
+            if el.is_displayed():
+                print(f"点击 Dashboard 中的服务入口: {sid}")
+                safe_click_element(sb, el, f"服务入口 {sid}")
+                sb.sleep(4)
+                return not is_error_page(page_body(sb))
+    except Exception as e:
+        print(f"点击服务入口失败: {e}")
+    return False
+
+
+def open_service_page(sb, server_url):
+    """登录后先建立 Dashboard 会话，再尝试多个服务页地址。"""
+    open_dashboard_session(sb)
+    last_body = page_body(sb)
+
+    for url in server_url_candidates(server_url):
+        try:
+            print(f"尝试打开: {url}")
+            sb.open(url)
+            sb.wait_for_ready_state_complete()
+            sb.sleep(4)
+            print(f"当前URL: {sb.get_current_url()}")
+            body = page_body(sb)
+            print("页面摘要:")
+            print(body[:500])
+            if is_valid_service_page(body):
+                return True, body
+            if "/dashboard" in url and click_dashboard_service(sb, server_url):
+                body = page_body(sb)
+                if is_valid_service_page(body) or find_renew_buttons(sb):
+                    return True, body
+            last_body = body
+        except Exception as e:
+            print(f"打开失败 {url}: {e}")
+    return False, last_body
+
+
 def read_service_info(sb):
     """读取服务页项目名 + Time remaining 后面的时间。"""
-    body = ""
-    try:
-        body = sb.driver.find_element(By.TAG_NAME, 'body').text
-    except Exception:
-        pass
+    body = page_body(sb)
 
     remaining = "未知"
     patterns = [
         r'Time remaining\s*:?\s*([0-9]+\s*[djh][^\n]*)',
         r'Temps restant\s*:?\s*([0-9]+\s*[djh][^\n]*)',
         r'Expires in\s*:?\s*([0-9]+\s*[djh][^\n]*)',
+        r'Available\s*:?\s*([0-9]+\s*[djh][^\n]*)',
         r'剩余(?:时间)?\s*:?\s*([0-9]+\s*[djh天日小时][^\n]*)',
     ]
     for p in patterns:
@@ -570,29 +718,34 @@ def read_service_info(sb):
             break
 
     name = "未知服务"
-    skip = {
+    skip_sub = [
         'online', 'offline', 'start', 'restart', 'stop', 'console',
         'version', 'files', 'databases', 'back', 'menu', 'aclclouds',
-        'time remaining', 'temps restant', 'free plan', 'renewal will be available'
-    }
+        'time remaining', 'temps restant', 'free plan', 'renewal will be available',
+        'something went wrong', 'does not exist', 'install the panel',
+        'close', 'privacy', 'terms of service', 'cookie policy', 'welcome'
+    ]
     for line in [ln.strip() for ln in body.splitlines() if ln.strip()]:
         low = line.lower()
-        if any(s in low for s in skip):
+        if any(s in low for s in skip_sub):
             continue
-        if re.search(r'time remaining|temps restant|expires|renouvel', low):
+        if re.search(r'time remaining|temps restant|expires|renouvel|available', low):
             continue
         if 2 <= len(line) <= 40:
             name = line
             break
 
-    # 再尝试更精确的标题元素
     for sel in ['h1', 'h2', 'h3', '[class*="title"]', '[class*="name"]']:
         try:
             for el in sb.driver.find_elements(By.CSS_SELECTOR, sel):
                 t = element_text(el)
-                if t and 2 <= len(t) <= 40 and 'time remaining' not in t.lower():
-                    name = t
-                    raise StopIteration
+                if not t or len(t) > 40:
+                    continue
+                low = t.lower()
+                if any(s in low for s in skip_sub):
+                    continue
+                name = t
+                raise StopIteration
         except StopIteration:
             break
         except Exception:
@@ -655,10 +808,15 @@ def process_account(sb, account):
     if not logged_in:
         if not email or not password:
             return service_name, email, "未更新", "❌ 登录失败（无 Cookie 且无邮箱密码）"
-        sb.open(LOGIN_URL)
-        sb.wait_for_ready_state_complete()
-        time.sleep(2)
-        logged_in = login(sb, email, password)
+        logged_in = False
+        for login_url in LOGIN_URLS:
+            print(f"尝试密码登录页面: {login_url}")
+            sb.open(login_url)
+            sb.wait_for_ready_state_complete()
+            time.sleep(2)
+            logged_in = login(sb, email, password)
+            if logged_in:
+                break
 
     if not logged_in:
         return service_name, email, cookie_status, "❌ 登录失败（Cookie + 密码均失败）"
@@ -670,17 +828,26 @@ def process_account(sb, account):
     if not server_url:
         return service_name, email, cookie_status, "❌ 未配置续期页面 SERVER_URL"
 
-    print(f"打开续期页面: {server_url}")
-    sb.open(server_url)
-    sb.wait_for_ready_state_complete()
-    sb.sleep(4)
-    print(f"当前URL: {sb.get_current_url()}")
-
+    opened, body = open_service_page(sb, server_url)
     service_name, remaining, body = read_service_info(sb)
     print(f"服务名: {service_name}")
     print(f"剩余时间: {remaining}")
-    print("页面摘要:")
-    print(body[:600])
+
+    if is_error_page(body) or not opened:
+        # 最后再从 Dashboard 的 Upcoming renewals 找 Renew
+        print("服务页异常，回退到 Dashboard Upcoming renewals")
+        open_dashboard_session(sb)
+        renew_btns = find_renew_buttons(sb)
+        service_name, remaining, body = read_service_info(sb)
+        if not renew_btns:
+            return service_name if service_name != "未知服务" else "未知服务", email, cookie_status, f"⏳ 未到续期时间或页面无法打开\n剩余时间: {remaining}"
+        print("Dashboard 上发现 Renew，开始续期")
+        clicked = safe_click_element(sb, renew_btns[0], f"{service_name} Renew")
+        if not clicked:
+            return service_name, email, cookie_status, f"❌ 点击 Renew 失败\n剩余时间: {remaining}"
+        handle_renew_antibot(sb, service_name)
+        sb.sleep(3)
+        return service_name, email, cookie_status, f"✅ 已在 Dashboard 点击 Renew\n原剩余: {remaining}"
 
     renew_btns = find_renew_buttons(sb)
     if not renew_btns:
@@ -728,7 +895,7 @@ def main():
             "password": os.getenv("PASSWORD") or "",
             "cookie": os.getenv("ACL_COOKIE") or "",
             "secret_name": "ACL_COOKIE",
-            "server_url": os.getenv("SERVER_URL") or os.getenv("SERVER_URL_1") or "",
+            "server_url": os.getenv("SERVER_URL") or os.getenv("SERVER_URL_1") or DEFAULT_SERVER_URL_1,
         })
     if os.getenv("EMAIL_2") or os.getenv("ACL_COOKIE_2") or os.getenv("SERVER_URL_2"):
         accounts.append({
@@ -736,7 +903,7 @@ def main():
             "password": os.getenv("PASSWORD_2") or "",
             "cookie": os.getenv("ACL_COOKIE_2") or "",
             "secret_name": "ACL_COOKIE_2",
-            "server_url": os.getenv("SERVER_URL_2") or "",
+            "server_url": os.getenv("SERVER_URL_2") or DEFAULT_SERVER_URL_2,
         })
 
     if not accounts:
@@ -745,6 +912,8 @@ def main():
         return
 
     print(f"共加载 {len(accounts)} 个服务")
+    for i, acc in enumerate(accounts, 1):
+        print(f"服务{i} URL: {acc.get('server_url') or '(空)'}")
 
     sb_options = {'uc': True, 'headless': False}
     if IS_PROXY:
