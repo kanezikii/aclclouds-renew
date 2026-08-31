@@ -885,7 +885,7 @@ def main():
         })
     if os.getenv("EMAIL_2") or os.getenv("ACL_COOKIE_2") or os.getenv("PASSWORD_2"):
         accounts.append({
-            "email": os.getenv("EMAIL_2") or "",
+            "email": os.getenv("EMAIL_2") or "kanezi0417@gmail.com",
             "password": os.getenv("PASSWORD_2") or "",
             "cookie": os.getenv("ACL_COOKIE_2") or "",
             "secret_name": "ACL_COOKIE_2",
