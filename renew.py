@@ -942,7 +942,7 @@ def main():
                 final_lines.append(f"🍪 Cookie状态: {acc['cookie_status']}")
                 final_lines.append(acc['result'])
                 final_lines.append("")
-            final_lines.append("母狗任务全部完成💗")
+            final_lines.append("💗母狗任务全部完成💗")
             send_telegram("\n".join(final_lines))
             print("全部服务处理完成，已发送一条总汇总")
         except Exception as e:
