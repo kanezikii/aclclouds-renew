@@ -74,6 +74,11 @@ def mask_email(email):
     return f"{masked_local}@{domain}"
 
 
+def env_flag(name):
+    val = os.getenv(name)
+    return "有" if val else "无"
+
+
 # ===================== Cookie 相关 =====================
 def parse_cookie_string(cookie_string):
     cookies = {}
@@ -251,6 +256,19 @@ def unique_elements(elements):
     return unique
 
 
+def reset_browser_session(sb):
+    """切换账号前清掉上一账号登录态。"""
+    try:
+        sb.driver.delete_all_cookies()
+    except Exception:
+        pass
+    try:
+        sb.open("about:blank")
+        sb.sleep(1)
+    except Exception:
+        pass
+
+
 # ===================== 登录相关 =====================
 def login_by_cookie(sb, cookie_str):
     if not cookie_str:
@@ -292,12 +310,12 @@ def login_by_cookie(sb, cookie_str):
 
         sb.open(f"{BASE_URL}/dashboard")
         sb.sleep(6)
-        if is_logged_in(sb):
+        if is_logged_in(sb) and LOGIN_PATH not in sb.get_current_url():
             print("✅ Cookie 登录成功")
             return True
         sb.refresh()
         sb.sleep(4)
-        if is_logged_in(sb):
+        if is_logged_in(sb) and LOGIN_PATH not in sb.get_current_url():
             print("✅ Cookie 登录成功（刷新后）")
             return True
         print("Cookie 登录失败")
@@ -444,7 +462,7 @@ def handle_captcha_challenge(sb, label='验证码', timeout=20):
                 if target.lower() in txt:
                     candidate = opt
                     break
-        if not candidate:
+        if not candidate and options:
             candidate = options[0]
 
         print(f"{label} 点击选项 #{attempt+1} (目标: {target}) ...")
@@ -463,9 +481,9 @@ def handle_captcha_challenge(sb, label='验证码', timeout=20):
                 return "not-found:" + buttons.length;
             ''', target)
             print(f"{label} JS匹配结果: {js_result}")
-            if not str(js_result).startswith("clicked:"):
+            if not str(js_result).startswith("clicked:") and candidate:
                 safe_click_element(sb, candidate, label)
-        else:
+        elif candidate:
             safe_click_element(sb, candidate, label)
         sb.sleep(2)
 
@@ -565,7 +583,7 @@ def find_renew_buttons(sb):
             if not btn.is_displayed():
                 continue
             txt = element_text(btn).lower()
-            if any(k in txt for k in ['renew', 'renouveler']):
+            if txt in ('renew', 'renouveler') or txt.startswith('renew') or txt.startswith('renouveler'):
                 visible.append(btn)
         except Exception:
             continue
@@ -585,8 +603,6 @@ def is_error_page(body):
         "something went wrong",
         "does not exist on this server",
         "requested resource does not exist",
-        "404",
-        "not found",
     ])
 
 
@@ -596,53 +612,20 @@ def is_valid_service_page(body):
     low = body.lower()
     return any(k in low for k in [
         "time remaining", "temps restant", "expires in",
-        "renew", "renouveler", "start", "restart", "stop",
-        "free plan", "online", "offline"
+        "start", "restart", "stop", "free plan", "online", "offline"
     ])
-
-
-def server_url_candidates(server_url):
-    urls = []
-    raw = (server_url or "").strip()
-    if raw:
-        urls.append(raw)
-    sid = ""
-    m = re.search(r"/server/([A-Za-z0-9_-]+)", raw)
-    if m:
-        sid = m.group(1)
-    if sid:
-        urls.extend([
-            f"{BASE_URL}/server/{sid}",
-            f"{DASH_URL}/server/{sid}",
-            f"{BASE_URL}/dashboard/server/{sid}",
-            f"{DASH_URL}/dashboard/server/{sid}",
-            f"{BASE_URL}/servers/{sid}",
-            f"{DASH_URL}/servers/{sid}",
-        ])
-    # 保底：先进入 dashboard 建立会话
-    urls.extend([
-        f"{BASE_URL}/dashboard",
-        f"{DASH_URL}/dashboard",
-    ])
-    seen = set()
-    out = []
-    for u in urls:
-        if u not in seen:
-            seen.add(u)
-            out.append(u)
-    return out
 
 
 def open_dashboard_session(sb):
     for url in [f"{BASE_URL}/dashboard", f"{DASH_URL}/dashboard"]:
         try:
-            print(f"先打开 Dashboard 建立会话: {url}")
+            print(f"打开 Dashboard: {url}")
             sb.open(url)
             sb.wait_for_ready_state_complete()
             sb.sleep(4)
             body = page_body(sb)
             print(f"Dashboard URL: {sb.get_current_url()}")
-            if not is_error_page(body) and ("welcome" in body.lower() or "dashboard" in body.lower() or "renew" in body.lower()):
+            if not is_error_page(body) and ("welcome" in body.lower() or "dashboard" in body.lower() or "my services" in body.lower()):
                 return True
         except Exception as e:
             print(f"打开 Dashboard 失败: {e}")
@@ -650,7 +633,6 @@ def open_dashboard_session(sb):
 
 
 def click_dashboard_service(sb, server_url):
-    """Dashboard 打不开 /server/id 时，尝试点击对应服务入口。"""
     sid = ""
     m = re.search(r"/server/([A-Za-z0-9_-]+)", server_url or "")
     if m:
@@ -659,105 +641,106 @@ def click_dashboard_service(sb, server_url):
         return False
     try:
         links = sb.driver.find_elements(By.XPATH, f'//a[contains(@href, "{sid}")]')
-        if not links:
-            links = sb.driver.find_elements(By.XPATH, f'//*[contains(@href, "{sid}")]')
         for el in links:
             if el.is_displayed():
                 print(f"点击 Dashboard 中的服务入口: {sid}")
                 safe_click_element(sb, el, f"服务入口 {sid}")
-                sb.sleep(4)
-                return not is_error_page(page_body(sb))
+                sb.sleep(5)
+                return is_valid_service_page(page_body(sb))
     except Exception as e:
         print(f"点击服务入口失败: {e}")
     return False
 
 
-def open_service_page(sb, server_url):
-    """登录后先建立 Dashboard 会话，再尝试多个服务页地址。"""
-    open_dashboard_session(sb)
-    last_body = page_body(sb)
+def find_server_links(sb):
+    try:
+        return unique_elements(sb.driver.find_elements(By.XPATH, '//a[contains(@href, "/server/")]'))
+    except Exception:
+        return []
 
-    for url in server_url_candidates(server_url):
+
+def open_service_page(sb, server_url):
+    open_dashboard_session(sb)
+
+    if click_dashboard_service(sb, server_url):
+        return True, page_body(sb)
+
+    for link in find_server_links(sb):
+        href = ""
         try:
-            print(f"尝试打开: {url}")
-            sb.open(url)
-            sb.wait_for_ready_state_complete()
-            sb.sleep(4)
-            print(f"当前URL: {sb.get_current_url()}")
+            href = link.get_attribute("href") or ""
+        except Exception:
+            continue
+        if "/server/" not in href:
+            continue
+        print(f"从 Dashboard 点击服务链接: {href}")
+        if safe_click_element(sb, link, "服务链接"):
+            sb.sleep(5)
             body = page_body(sb)
-            print("页面摘要:")
-            print(body[:500])
+            print(f"进入后URL: {sb.get_current_url()}")
+            print(body[:400])
             if is_valid_service_page(body):
                 return True, body
-            if "/dashboard" in url and click_dashboard_service(sb, server_url):
-                body = page_body(sb)
-                if is_valid_service_page(body) or find_renew_buttons(sb):
-                    return True, body
-            last_body = body
-        except Exception as e:
-            print(f"打开失败 {url}: {e}")
-    return False, last_body
+
+    if server_url:
+        print(f"最后尝试直接打开: {server_url}")
+        sb.open(server_url)
+        sb.wait_for_ready_state_complete()
+        sb.sleep(5)
+        body = page_body(sb)
+        print(body[:400])
+        if is_valid_service_page(body):
+            return True, body
+
+    return False, page_body(sb)
 
 
 def read_service_info(sb):
-    """读取服务页项目名 + Time remaining 后面的时间。"""
     body = page_body(sb)
-
     remaining = "未知"
-    patterns = [
-        r'Time remaining\s*:?\s*([0-9]+\s*[djh][^\n]*)',
-        r'Temps restant\s*:?\s*([0-9]+\s*[djh][^\n]*)',
-        r'Expires in\s*:?\s*([0-9]+\s*[djh][^\n]*)',
-        r'Available\s*:?\s*([0-9]+\s*[djh][^\n]*)',
-        r'剩余(?:时间)?\s*:?\s*([0-9]+\s*[djh天日小时][^\n]*)',
-    ]
-    for p in patterns:
-        m = re.search(p, body, re.I)
-        if m:
-            remaining = m.group(1).strip()
-            break
+    try:
+        els = sb.driver.find_elements(
+            By.XPATH,
+            '//*[contains(text(), "Time remaining") or contains(text(), "Temps restant") or contains(text(), "Expires in")]'
+        )
+        for el in els:
+            txt = element_text(el)
+            m = re.search(r'(?:Time remaining|Temps restant|Expires in)\s*:?\s*([0-9]+\s*[djh][^\n]*)', txt, re.I)
+            if m:
+                remaining = m.group(1).strip()
+                break
+    except Exception:
+        pass
+
+    if remaining == "未知":
+        for p in [
+            r'Time remaining\s*:?\s*([0-9]+\s*[djh][^\n]*)',
+            r'Temps restant\s*:?\s*([0-9]+\s*[djh][^\n]*)',
+            r'Expires in\s*:?\s*([0-9]+\s*[djh][^\n]*)',
+        ]:
+            m = re.search(p, body, re.I)
+            if m:
+                remaining = m.group(1).strip()
+                break
 
     name = "未知服务"
-    skip_sub = [
-        'online', 'offline', 'start', 'restart', 'stop', 'console',
-        'version', 'files', 'databases', 'back', 'menu', 'aclclouds',
-        'time remaining', 'temps restant', 'free plan', 'renewal will be available',
-        'something went wrong', 'does not exist', 'install the panel',
-        'close', 'privacy', 'terms of service', 'cookie policy', 'welcome'
-    ]
-    for line in [ln.strip() for ln in body.splitlines() if ln.strip()]:
-        low = line.lower()
-        if any(s in low for s in skip_sub):
-            continue
-        if re.search(r'time remaining|temps restant|expires|renouvel|available', low):
-            continue
-        if 2 <= len(line) <= 40:
-            name = line
-            break
-
-    for sel in ['h1', 'h2', 'h3', '[class*="title"]', '[class*="name"]']:
+    for sel in ['h1.server-name', '.server-name']:
         try:
             for el in sb.driver.find_elements(By.CSS_SELECTOR, sel):
                 t = element_text(el)
-                if not t or len(t) > 40:
-                    continue
-                low = t.lower()
-                if any(s in low for s in skip_sub):
-                    continue
-                name = t
-                raise StopIteration
-        except StopIteration:
-            break
+                if t and 1 <= len(t) <= 40:
+                    name = t
+                    break
+            if name != "未知服务":
+                break
         except Exception:
             continue
-
     return name, remaining, body
 
 
 def handle_renew_antibot(sb, project_name):
     print(f"[{project_name}] 检查是否出现续期图形验证码...")
     sb.sleep(2.5)
-
     has_captcha = False
     check_selectors = [
         'div.auth-captcha-inner[role="checkbox"]',
@@ -771,16 +754,13 @@ def handle_renew_antibot(sb, project_name):
         try:
             if sb.is_element_visible(sel):
                 has_captcha = True
-                print(f"[{project_name}] 检测到验证码元素")
                 break
         except Exception:
             continue
-
     if not has_captcha:
         print(f"[{project_name}] 未检测到验证码弹窗")
         return False
-
-    print(f"[{project_name}] 开始执行完整图形验证码流程（与登录相同）...")
+    print(f"[{project_name}] 开始执行完整图形验证码流程...")
     success = click_captcha_checkbox(sb, label=f"续期验证码-{project_name}", timeout=12)
     print(f"[{project_name}] 续期验证码{'通过' if success else '未通过'}")
     sb.sleep(2)
@@ -795,11 +775,12 @@ def process_account(sb, account):
     server_url = account["server_url"]
 
     print(f"\n{'='*20} 开始处理服务页: {server_url} {'='*20}")
+    print(f"邮箱配置: {'有' if email else '无'} / 密码配置: {'有' if password else '无'} / Cookie配置: {'有' if cookie else '无'}")
 
     service_name = "未知服务"
-    remaining = "未知"
     cookie_status = "未更新"
-    result_text = ""
+
+    reset_browser_session(sb)
 
     logged_in = False
     if cookie:
@@ -807,8 +788,16 @@ def process_account(sb, account):
 
     if not logged_in:
         if not email or not password:
-            return service_name, email, "未更新", "❌ 登录失败（无 Cookie 且无邮箱密码）"
-        logged_in = False
+            missing = []
+            if not cookie:
+                missing.append("Cookie")
+            if not email:
+                missing.append("EMAIL")
+            if not password:
+                missing.append("PASSWORD")
+            msg = "❌ 登录失败（缺少: " + "/".join(missing) + "）"
+            print(msg)
+            return service_name, email, cookie_status, msg
         for login_url in LOGIN_URLS:
             print(f"尝试密码登录页面: {login_url}")
             sb.open(login_url)
@@ -834,19 +823,16 @@ def process_account(sb, account):
     print(f"剩余时间: {remaining}")
 
     if is_error_page(body) or not opened:
-        # 最后再从 Dashboard 的 Upcoming renewals 找 Renew
         print("服务页异常，回退到 Dashboard Upcoming renewals")
         open_dashboard_session(sb)
         renew_btns = find_renew_buttons(sb)
         service_name, remaining, body = read_service_info(sb)
         if not renew_btns:
-            return service_name if service_name != "未知服务" else "未知服务", email, cookie_status, f"⏳ 未到续期时间或页面无法打开\n剩余时间: {remaining}"
-        print("Dashboard 上发现 Renew，开始续期")
+            return service_name, email, cookie_status, f"⏳ 未到续期时间\n剩余时间: {remaining}"
         clicked = safe_click_element(sb, renew_btns[0], f"{service_name} Renew")
         if not clicked:
             return service_name, email, cookie_status, f"❌ 点击 Renew 失败\n剩余时间: {remaining}"
         handle_renew_antibot(sb, service_name)
-        sb.sleep(3)
         return service_name, email, cookie_status, f"✅ 已在 Dashboard 点击 Renew\n原剩余: {remaining}"
 
     renew_btns = find_renew_buttons(sb)
@@ -864,18 +850,15 @@ def process_account(sb, account):
     sb.sleep(3)
     sb.refresh()
     sb.sleep(4)
-
     new_name, new_remaining, _ = read_service_info(sb)
     if new_name and new_name != "未知服务":
         service_name = new_name
-
     if new_remaining != remaining and new_remaining != "未知":
         result_text = f"✅ 续期成功\n原剩余: {remaining}\n新剩余: {new_remaining}"
     elif not find_renew_buttons(sb) and new_remaining:
         result_text = f"✅ 续期完成（按钮已消失）\n剩余时间: {new_remaining}"
     else:
         result_text = f"❌ 续期未确认\n剩余时间: {new_remaining or remaining}"
-
     return service_name, email, cookie_status, result_text
 
 
@@ -887,9 +870,12 @@ def main():
     print("ACLClouds 自动续期启动（按服务页）")
     print("运行时间:", beijing_time_str())
     print("=" * 50)
+    print("环境变量检查（只显示有/无，不打印内容）:")
+    print(f"EMAIL={env_flag('EMAIL')} PASSWORD={env_flag('PASSWORD')} ACL_COOKIE={env_flag('ACL_COOKIE')} SERVER_URL={env_flag('SERVER_URL')}")
+    print(f"EMAIL_2={env_flag('EMAIL_2')} PASSWORD_2={env_flag('PASSWORD_2')} ACL_COOKIE_2={env_flag('ACL_COOKIE_2')} SERVER_URL_2={env_flag('SERVER_URL_2')}")
 
     accounts = []
-    if os.getenv("EMAIL") or os.getenv("ACL_COOKIE") or os.getenv("SERVER_URL"):
+    if os.getenv("EMAIL") or os.getenv("ACL_COOKIE") or os.getenv("PASSWORD"):
         accounts.append({
             "email": os.getenv("EMAIL") or "",
             "password": os.getenv("PASSWORD") or "",
@@ -897,7 +883,7 @@ def main():
             "secret_name": "ACL_COOKIE",
             "server_url": os.getenv("SERVER_URL") or os.getenv("SERVER_URL_1") or DEFAULT_SERVER_URL_1,
         })
-    if os.getenv("EMAIL_2") or os.getenv("ACL_COOKIE_2") or os.getenv("SERVER_URL_2"):
+    if os.getenv("EMAIL_2") or os.getenv("ACL_COOKIE_2") or os.getenv("PASSWORD_2"):
         accounts.append({
             "email": os.getenv("EMAIL_2") or "",
             "password": os.getenv("PASSWORD_2") or "",
@@ -913,7 +899,7 @@ def main():
 
     print(f"共加载 {len(accounts)} 个服务")
     for i, acc in enumerate(accounts, 1):
-        print(f"服务{i} URL: {acc.get('server_url') or '(空)'}")
+        print(f"服务{i} URL: {acc.get('server_url') or '(空)'} 邮箱: {mask_email(acc.get('email', ''))}")
 
     sb_options = {'uc': True, 'headless': False}
     if IS_PROXY:
@@ -921,12 +907,10 @@ def main():
         print(f"代理: {PROXY_SERVER}")
 
     all_summaries = []
-
     with SB(**sb_options) as sb:
         try:
             print("当前出口IP:", get_current_ip(PROXY_SERVER if IS_PROXY else ""))
             sb.set_window_size(1366, 768)
-
             for account in accounts:
                 try:
                     service_name, email, cookie_status, result_text = process_account(sb, account)
