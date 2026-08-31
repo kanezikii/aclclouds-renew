@@ -21,12 +21,6 @@ LOGIN_PATH = '/auth/login'
 BASE_URL = os.getenv('ACL_BASE_URL') or 'https://aclclouds.com'
 DASH_URL = 'https://dash.aclclouds.com'
 LOGIN_URL = f'{DASH_URL}{LOGIN_PATH}'
-DASHBOARD_URLS = [
-    f'{BASE_URL}/dashboard',
-    f'{DASH_URL}/dashboard',
-    f'{BASE_URL}/dashboard/projects',
-    f'{DASH_URL}/dashboard/projects',
-]
 
 
 def beijing_time_str():
@@ -290,7 +284,7 @@ def login_by_cookie(sb, cookie_str):
                 except Exception as e:
                     print(f"CDP写入失败 {name}@{domain}: {e}")
 
-        sb.open(DASHBOARD_URLS[0])
+        sb.open(f"{BASE_URL}/dashboard")
         sb.sleep(6)
         if is_logged_in(sb):
             print("✅ Cookie 登录成功")
@@ -527,154 +521,84 @@ def login(sb, email, password):
         return LOGIN_PATH not in sb.get_current_url()
 
 
-# ===================== Upcoming renewals =====================
-def open_dashboard(sb):
-    """优先打开首页 Dashboard，而不是旧的 /dashboard/projects"""
-    for url in DASHBOARD_URLS:
-        try:
-            print(f"打开页面: {url}")
-            sb.open(url)
-            sb.wait_for_ready_state_complete()
-            sb.sleep(4)
-            body = ""
-            try:
-                body = sb.driver.find_element(By.TAG_NAME, 'body').text
-            except Exception:
-                pass
-            print(f"当前URL: {sb.get_current_url()}")
-            if any(k in body.lower() for k in [
-                'upcoming renewals', 'renouvellement', 'renew', 'renouveler',
-                'welcome', 'my services', 'mes services', 'dashboard'
-            ]):
-                return True
-        except Exception as e:
-            print(f"打开 {url} 失败: {e}")
-    return False
-
-
-def find_upcoming_section(sb):
+# ===================== 服务页读取与续期 =====================
+def find_renew_buttons(sb):
     xpaths = [
-        '//*[contains(translate(., "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "upcoming renewals")]',
-        '//*[contains(translate(., "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouvellement")]',
-        '//*[contains(translate(., "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "prochains renouvellements")]',
+        '//button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renew")]',
+        '//button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouveler")]',
+        '//a[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renew")]',
+        '//a[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouveler")]',
     ]
+    buttons = []
     for xp in xpaths:
         try:
-            els = sb.driver.find_elements(By.XPATH, xp)
-            for el in els:
-                if not el.is_displayed():
-                    continue
-                # 向上找一块包含表格/按钮的容器
-                container = sb.driver.execute_script('''
-                    let n = arguments[0];
-                    for (let i = 0; n && i < 8; i++, n = n.parentElement) {
-                        const text = (n.innerText || "");
-                        if (n.querySelector && (n.querySelector("table") || /renew|renouveler|manage|gérer/i.test(text))) {
-                            return n;
-                        }
-                    }
-                    return arguments[0];
-                ''', el)
-                return container
+            buttons.extend(sb.driver.find_elements(By.XPATH, xp))
         except Exception:
             continue
-    return None
-
-
-def parse_renewal_rows(sb):
-    """从 Upcoming renewals 模块读取需要续期的行。"""
-    items = []
-    section = find_upcoming_section(sb)
-
-    # 优先在模块内找 Renew 按钮
-    search_roots = []
-    if section is not None:
-        search_roots.append(section)
-    search_roots.append(sb.driver)
-
-    seen = set()
-    for root in search_roots:
-        buttons = []
-        xpaths = [
-            './/button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renew")]',
-            './/button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouveler")]',
-            './/a[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renew")]',
-            './/a[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouveler")]',
-        ]
-        for xp in xpaths:
-            try:
-                buttons.extend(root.find_elements(By.XPATH, xp))
-            except Exception:
+    visible = []
+    for btn in unique_elements(buttons):
+        try:
+            if not btn.is_displayed():
                 continue
+            txt = element_text(btn).lower()
+            if any(k in txt for k in ['renew', 'renouveler']):
+                visible.append(btn)
+        except Exception:
+            continue
+    return visible
 
-        for btn in unique_elements(buttons):
-            try:
-                if not btn.is_displayed():
-                    continue
-                txt = element_text(btn).lower()
-                if txt not in ('renew', 'renouveler') and 'renew' not in txt and 'renouveler' not in txt:
-                    continue
-                row = sb.driver.execute_script('''
-                    let n = arguments[0];
-                    for (let i = 0; n && i < 8; i++, n = n.parentElement) {
-                        if (n.tagName === "TR") return n;
-                        const cls = (n.className || "").toString().toLowerCase();
-                        if (/row|item|card/.test(cls) && (n.innerText || "").length > 8) return n;
-                    }
-                    return arguments[0].parentElement;
-                ''', btn)
-                row_text = element_text(row)
-                if row_text in seen:
-                    continue
-                seen.add(row_text)
 
-                name = extract_project_name_from_row(row_text)
-                expiry = extract_expiry_from_row(row_text)
-                items.append({
-                    "name": name,
-                    "expiry": expiry,
-                    "row_text": row_text[:200],
-                    "button": btn,
-                })
-            except Exception as e:
-                print(f"解析续期行失败: {e}")
+def read_service_info(sb):
+    """读取服务页项目名 + Time remaining 后面的时间。"""
+    body = ""
+    try:
+        body = sb.driver.find_element(By.TAG_NAME, 'body').text
+    except Exception:
+        pass
 
-        if items:
+    remaining = "未知"
+    patterns = [
+        r'Time remaining\s*:?\s*([0-9]+\s*[djh][^\n]*)',
+        r'Temps restant\s*:?\s*([0-9]+\s*[djh][^\n]*)',
+        r'Expires in\s*:?\s*([0-9]+\s*[djh][^\n]*)',
+        r'剩余(?:时间)?\s*:?\s*([0-9]+\s*[djh天日小时][^\n]*)',
+    ]
+    for p in patterns:
+        m = re.search(p, body, re.I)
+        if m:
+            remaining = m.group(1).strip()
             break
 
-    return items
-
-
-def extract_project_name_from_row(text):
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    name = "未知服务"
     skip = {
-        'id', 'model', 'renewal', 'status', 'actions', 'renew', 'renouveler',
-        'manage', 'gérer', 'active', 'upcoming renewals', 'available'
+        'online', 'offline', 'start', 'restart', 'stop', 'console',
+        'version', 'files', 'databases', 'back', 'menu', 'aclclouds',
+        'time remaining', 'temps restant', 'free plan', 'renewal will be available'
     }
-    for line in lines:
+    for line in [ln.strip() for ln in body.splitlines() if ln.strip()]:
         low = line.lower()
-        if low in skip:
+        if any(s in low for s in skip):
             continue
-        if re.fullmatch(r'[0-9a-f]{6,}', low):
+        if re.search(r'time remaining|temps restant|expires|renouvel', low):
             continue
-        if re.search(r'available|expires|temps restant|sep |jan |feb |mar |apr |may |jun |jul |aug |oct |nov |dec |\d{4}', low):
-            continue
-        if len(line) <= 40:
-            return line
-    return lines[0] if lines else "未知项目"
+        if 2 <= len(line) <= 40:
+            name = line
+            break
 
+    # 再尝试更精确的标题元素
+    for sel in ['h1', 'h2', 'h3', '[class*="title"]', '[class*="name"]']:
+        try:
+            for el in sb.driver.find_elements(By.CSS_SELECTOR, sel):
+                t = element_text(el)
+                if t and 2 <= len(t) <= 40 and 'time remaining' not in t.lower():
+                    name = t
+                    raise StopIteration
+        except StopIteration:
+            break
+        except Exception:
+            continue
 
-def extract_expiry_from_row(text):
-    m = re.search(r'(Available|Expires in|Temps restant)\s*:?\s*([0-9]+\s*[djh]\s*[0-9]*\s*h?)', text, re.I)
-    if m:
-        return m.group(0).strip()
-    m = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},\s+\d{4}', text, re.I)
-    if m:
-        return m.group(0)
-    m = re.search(r'\d{4}[-/]\d{1,2}[-/]\d{1,2}', text)
-    if m:
-        return m.group(0)
-    return text.splitlines()[0][:40] if text else "未知"
+    return name, remaining, body
 
 
 def handle_renew_antibot(sb, project_name):
@@ -710,33 +634,19 @@ def handle_renew_antibot(sb, project_name):
     return success
 
 
-def wait_renew_row_gone(sb, project_name, timeout=20):
-    start = time.time()
-    while time.time() - start < timeout:
-        items = parse_renewal_rows(sb)
-        names = [i["name"].lower() for i in items]
-        if project_name.lower() not in names:
-            return True
-        # 若该行已没有 Renew 按钮，也视为成功
-        still_has_btn = any(i["name"].lower() == project_name.lower() for i in items)
-        if not still_has_btn:
-            return True
-        sb.sleep(1.2)
-    return False
-
-
 def process_account(sb, account):
-    name = account["name"]
     email = account["email"]
     password = account["password"]
     cookie = account["cookie"]
     secret_name = account["secret_name"]
+    server_url = account["server_url"]
 
-    print(f"\n{'='*20} 开始处理账号: {name} {'='*20}")
-    print(f"邮箱: {mask_email(email)}")
+    print(f"\n{'='*20} 开始处理服务页: {server_url} {'='*20}")
 
-    results = []
+    service_name = "未知服务"
+    remaining = "未知"
     cookie_status = "未更新"
+    result_text = ""
 
     logged_in = False
     if cookie:
@@ -744,61 +654,62 @@ def process_account(sb, account):
 
     if not logged_in:
         if not email or not password:
-            results.append("❌ 登录失败（无 Cookie 且无邮箱密码）")
-            return name, email, cookie_status, results
+            return service_name, email, "未更新", "❌ 登录失败（无 Cookie 且无邮箱密码）"
         sb.open(LOGIN_URL)
         sb.wait_for_ready_state_complete()
         time.sleep(2)
         logged_in = login(sb, email, password)
 
     if not logged_in:
-        results.append("❌ 登录失败（Cookie + 密码均失败）")
-        return name, email, cookie_status, results
+        return service_name, email, cookie_status, "❌ 登录失败（Cookie + 密码均失败）"
 
-    print(f"账号 {name} 登录成功，更新 Cookie → {secret_name}")
+    print(f"登录成功，更新 Cookie → {secret_name}")
     cookie_updated = save_new_cookie(sb, secret_name)
     cookie_status = "✅ 更新成功" if cookie_updated else "❌ 更新失败"
 
-    opened = open_dashboard(sb)
-    if not opened:
-        results.append("❌ 未能打开 Dashboard")
-        return name, email, cookie_status, results
+    if not server_url:
+        return service_name, email, cookie_status, "❌ 未配置续期页面 SERVER_URL"
 
-    try:
-        body_preview = sb.driver.find_element(By.TAG_NAME, 'body').text[:800]
-        print("页面文本摘要:")
-        print(body_preview)
-    except Exception:
-        pass
+    print(f"打开续期页面: {server_url}")
+    sb.open(server_url)
+    sb.wait_for_ready_state_complete()
+    sb.sleep(4)
+    print(f"当前URL: {sb.get_current_url()}")
 
-    items = parse_renewal_rows(sb)
-    print(f"Upcoming renewals 中发现 {len(items)} 个可续期项目")
+    service_name, remaining, body = read_service_info(sb)
+    print(f"服务名: {service_name}")
+    print(f"剩余时间: {remaining}")
+    print("页面摘要:")
+    print(body[:600])
 
-    if not items:
-        results.append("⏳ Upcoming renewals 为空，当前没有需要续期的项目")
-        return name, email, cookie_status, results
+    renew_btns = find_renew_buttons(sb)
+    if not renew_btns:
+        result_text = f"⏳ 未到续期时间\n剩余时间: {remaining}"
+        print(f"[{service_name}] 没有 Renew 按钮，跳过")
+        return service_name, email, cookie_status, result_text
 
-    for item in items:
-        project_name = item["name"]
-        old_expiry = item["expiry"]
-        print(f"[{project_name}] 当前状态: {old_expiry}")
-        try:
-            clicked = safe_click_element(sb, item["button"], f"{project_name} Renew")
-            if not clicked:
-                results.append(f"❌ {project_name} 点击 Renew 失败\n   当前: {old_expiry}")
-                continue
-            print(f"[{project_name}] 已点击 Renew")
-            handle_renew_antibot(sb, project_name)
-            sb.sleep(3)
-            gone = wait_renew_row_gone(sb, project_name, timeout=18)
-            if gone:
-                results.append(f"✅ {project_name} 续期成功\n   原状态: {old_expiry}")
-            else:
-                results.append(f"❌ {project_name} 续期未确认\n   当前: {old_expiry}")
-        except Exception as e:
-            results.append(f"⚠️ {project_name} 处理异常: {e}")
+    print(f"[{service_name}] 发现 Renew 按钮，开始续期")
+    clicked = safe_click_element(sb, renew_btns[0], f"{service_name} Renew")
+    if not clicked:
+        return service_name, email, cookie_status, f"❌ 点击 Renew 失败\n剩余时间: {remaining}"
 
-    return name, email, cookie_status, results
+    handle_renew_antibot(sb, service_name)
+    sb.sleep(3)
+    sb.refresh()
+    sb.sleep(4)
+
+    new_name, new_remaining, _ = read_service_info(sb)
+    if new_name and new_name != "未知服务":
+        service_name = new_name
+
+    if new_remaining != remaining and new_remaining != "未知":
+        result_text = f"✅ 续期成功\n原剩余: {remaining}\n新剩余: {new_remaining}"
+    elif not find_renew_buttons(sb) and new_remaining:
+        result_text = f"✅ 续期完成（按钮已消失）\n剩余时间: {new_remaining}"
+    else:
+        result_text = f"❌ 续期未确认\n剩余时间: {new_remaining or remaining}"
+
+    return service_name, email, cookie_status, result_text
 
 
 def main():
@@ -806,26 +717,26 @@ def main():
     PROXY_SERVER = os.getenv('S5_PROXY') or os.getenv('PROXY_SERVER') or "socks5://127.0.0.1:1080"
 
     print("=" * 50)
-    print("ACLClouds 自动续期启动（多账号 / Upcoming renewals）")
+    print("ACLClouds 自动续期启动（按服务页）")
     print("运行时间:", beijing_time_str())
     print("=" * 50)
 
     accounts = []
-    if os.getenv("EMAIL") or os.getenv("ACL_COOKIE"):
+    if os.getenv("EMAIL") or os.getenv("ACL_COOKIE") or os.getenv("SERVER_URL"):
         accounts.append({
-            "name": "账号1",
             "email": os.getenv("EMAIL") or "",
             "password": os.getenv("PASSWORD") or "",
             "cookie": os.getenv("ACL_COOKIE") or "",
             "secret_name": "ACL_COOKIE",
+            "server_url": os.getenv("SERVER_URL") or os.getenv("SERVER_URL_1") or "",
         })
-    if os.getenv("EMAIL_2") or os.getenv("ACL_COOKIE_2"):
+    if os.getenv("EMAIL_2") or os.getenv("ACL_COOKIE_2") or os.getenv("SERVER_URL_2"):
         accounts.append({
-            "name": "账号2",
             "email": os.getenv("EMAIL_2") or "",
             "password": os.getenv("PASSWORD_2") or "",
             "cookie": os.getenv("ACL_COOKIE_2") or "",
             "secret_name": "ACL_COOKIE_2",
+            "server_url": os.getenv("SERVER_URL_2") or "",
         })
 
     if not accounts:
@@ -833,7 +744,7 @@ def main():
         send_telegram("❌ 没有配置任何账号，请检查 Secrets")
         return
 
-    print(f"共加载 {len(accounts)} 个账号")
+    print(f"共加载 {len(accounts)} 个服务")
 
     sb_options = {'uc': True, 'headless': False}
     if IS_PROXY:
@@ -849,43 +760,38 @@ def main():
 
             for account in accounts:
                 try:
-                    acc_name, email, cookie_status, results = process_account(sb, account)
+                    service_name, email, cookie_status, result_text = process_account(sb, account)
                     all_summaries.append({
-                        "name": acc_name,
+                        "service_name": service_name,
                         "email": email,
                         "cookie_status": cookie_status,
-                        "results": results
+                        "result": result_text,
                     })
                 except Exception as e:
-                    print(f"账号 {account['name']} 异常: {e}")
+                    print(f"服务处理异常: {e}")
                     all_summaries.append({
-                        "name": account["name"],
+                        "service_name": "未知服务",
                         "email": account.get("email", ""),
                         "cookie_status": "异常",
-                        "results": [f"❌ 处理异常: {str(e)}"]
+                        "result": f"❌ 处理异常: {str(e)}",
                     })
 
             final_lines = [
-                "🇫🇷 ACLClouds 自动续期总汇总",
+                "💗主人，ACLClouds 自动续期汇总",
                 f"⏱️ 运行时间: {beijing_time_str()}",
-                f"共处理 {len(all_summaries)} 个账号",
+                f"共处理 {len(all_summaries)} 个服务",
                 ""
             ]
             for acc in all_summaries:
                 final_lines.append("────────────")
-                final_lines.append(f"📌 账号: {acc['name']}")
-                final_lines.append(f"登录账户: {mask_email(acc['email'])}")
+                final_lines.append(f"📌 服务名: {acc['service_name']}")
+                final_lines.append(f"登录账户: {mask_email(acc.get('email', ''))}")
                 final_lines.append(f"🍪 Cookie状态: {acc['cookie_status']}")
+                final_lines.append(acc['result'])
                 final_lines.append("")
-                if acc['results']:
-                    for i, r in enumerate(acc['results'], 1):
-                        final_lines.append(f"{i}. {r}")
-                else:
-                    final_lines.append("无项目结果")
-                final_lines.append("")
-            final_lines.append("✅ 全部账号任务完成")
+            final_lines.append("母狗任务全部完成💗")
             send_telegram("\n".join(final_lines))
-            print("全部账号处理完成，已发送一条总汇总")
+            print("全部服务处理完成，已发送一条总汇总")
         except Exception as e:
             print("程序异常:", e)
             send_telegram(f"❌ 脚本异常\n{str(e)}")
