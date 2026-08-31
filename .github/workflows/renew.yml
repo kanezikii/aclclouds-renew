@@ -54,15 +54,15 @@ jobs:
 
       - name: 🚀 Run Renew Script
         env:
-          # 账号1
           EMAIL: ${{ secrets.EMAIL }}
           PASSWORD: ${{ secrets.PASSWORD }}
           ACL_COOKIE: ${{ secrets.ACL_COOKIE }}
-          
-          # 账号2
-          EMAIL_2: ${{ secrets.EMAIL_2 }}
+          SERVER_URL: ${{ secrets.SERVER_URL }}
+
+          MAIL_2: ${{ secrets.EMAIL_2 }}
           PASSWORD_2: ${{ secrets.PASSWORD_2 }}
           ACL_COOKIE_2: ${{ secrets.ACL_COOKIE_2 }}
+          SERVER_URL_2: ${{ secrets.SERVER_URL_2 }}
           
           GH_PAT: ${{ secrets.GH_PAT }}
           GH_OWNER: ${{ secrets.GH_OWNER }}
