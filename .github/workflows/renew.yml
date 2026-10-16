@@ -13,10 +13,10 @@ jobs:
       actions: write
     steps:
       - name: 📥 Checkout Repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: 🐍 Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -59,11 +59,11 @@ jobs:
           ACL_COOKIE: ${{ secrets.ACL_COOKIE }}
           SERVER_URL: ${{ secrets.SERVER_URL }}
 
-          MAIL_2: ${{ secrets.EMAIL_2 }}
+          EMAIL_2: ${{ secrets.EMAIL_2 }}
           PASSWORD_2: ${{ secrets.PASSWORD_2 }}
           ACL_COOKIE_2: ${{ secrets.ACL_COOKIE_2 }}
           SERVER_URL_2: ${{ secrets.SERVER_URL_2 }}
-          
+
           GH_PAT: ${{ secrets.GH_PAT }}
           GH_OWNER: ${{ secrets.GH_OWNER }}
           GH_REPO: ${{ secrets.GH_REPO }}
@@ -100,7 +100,7 @@ jobs:
             --limit=100 \
             --json databaseId \
             --jq '.[].databaseId')
-           
+            
           count=0
           for run_id in $runs
           do
