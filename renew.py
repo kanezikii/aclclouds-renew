@@ -100,11 +100,17 @@ def exec_cdp(sb, cmd, params=None):
     return sb.execute_cdp_cmd(cmd, params)
 
 
+def save_debug_screenshot(sb, filename):
+    try:
+        ensure_connected(sb)
+        sb.save_screenshot(filename)
+        print(f"📸 已保存截图: {filename}")
+    except Exception as e:
+        print(f"保存截图 {filename} 失败: {e}")
+
+
 # ===================== Cookie 相关 (支持插件 JSON 与传统字符串) =====================
 def parse_cookie_input(cookie_raw):
-    """
-    解析浏览器插件导出的 JSON 格式 Cookie 或传统分号分隔字符串
-    """
     if not cookie_raw or not cookie_raw.strip():
         return []
     raw = cookie_raw.strip()
@@ -136,7 +142,6 @@ def parse_cookie_input(cookie_raw):
                     value = item.get("value")
                     if name and value is not None:
                         domain = str(item.get("domain") or "aclclouds.com").strip()
-                        # 插件导出的 hostOnly 若未指定，则根据 domain 是否以 "." 开头判断
                         host_only = item.get("hostOnly")
                         if host_only is None:
                             host_only = not domain.startswith(".")
@@ -175,7 +180,6 @@ def parse_cookie_input(cookie_raw):
 
 
 def extract_acl_cookie_json(sb):
-    """提取最新有效 Cookie 并输出为与插件兼容的 JSON 字符串"""
     keep_names = (
         "XSRF-TOKEN",
         "__Host-aclclouds_session",
@@ -347,6 +351,30 @@ def safe_click_element(sb, element, label=""):
         return False
 
 
+def cdp_mouse_click(sb, x, y):
+    """通过 CDP 在指定页面坐标执行真实鼠标点击（穿透 Shadow DOM / 自定义组件）"""
+    try:
+        exec_cdp(sb, "Input.dispatchMouseEvent", {
+            "type": "mousePressed",
+            "x": float(x),
+            "y": float(y),
+            "button": "left",
+            "clickCount": 1
+        })
+        sb.sleep(0.08)
+        exec_cdp(sb, "Input.dispatchMouseEvent", {
+            "type": "mouseReleased",
+            "x": float(x),
+            "y": float(y),
+            "button": "left",
+            "clickCount": 1
+        })
+        return True
+    except Exception as e:
+        print(f"CDP 坐标点击失败: {e}")
+        return False
+
+
 def element_text(element):
     try:
         return (element.text or "").strip()
@@ -367,7 +395,6 @@ def unique_elements(elements):
 
 
 def reset_browser_session(sb):
-    """切换账号前清掉上一账号登录态（避免使用会断连的方法）。"""
     ensure_connected(sb)
     try:
         exec_cdp(sb, "Network.clearBrowserCookies", {})
@@ -378,6 +405,159 @@ def reset_browser_session(sb):
         sb.sleep(0.5)
     except Exception:
         pass
+
+
+# ===================== 验证框点击（纯复选框，无选词） =====================
+def click_captcha_checkbox(sb, label='验证码', timeout=10):
+    """
+    点击新版人机验证复选框（如 Cap 组件: 'Vérifier que vous êtes humain' / 'Verify you are human'），
+    同时穿透 Shadow DOM 与常规 DOM，无需选词挑战。
+    """
+    ensure_connected(sb)
+    start_time = time.time()
+    clicked = False
+
+    while time.time() - start_time < timeout:
+        # 使用 JS 深度遍历常规 DOM 与 Shadow DOM 查找复选框或验证文本
+        info = sb.execute_script('''
+            function findDeepCheckbox(root) {
+                const checkboxSelectors = [
+                    'input[type="checkbox"]',
+                    '[role="checkbox"]',
+                    '.auth-captcha-inner',
+                    '.auth-captcha-checkbox',
+                    '.cap-checkbox',
+                    'cap-widget'
+                ];
+                for (const sel of checkboxSelectors) {
+                    const els = root.querySelectorAll(sel);
+                    for (const el of els) {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                            return { el, rect, type: 'selector:' + sel };
+                        }
+                    }
+                }
+                const all = root.querySelectorAll('*');
+                for (const el of all) {
+                    if (el.shadowRoot) {
+                        const found = findDeepCheckbox(el.shadowRoot);
+                        if (found) return found;
+                    }
+                }
+                for (const el of all) {
+                    const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
+                    if (
+                        txt === 'vérifier que vous êtes humain' ||
+                        txt === 'verify you are human' ||
+                        txt === 'verify that you are human' ||
+                        txt === 'je ne suis pas un robot' ||
+                        txt === 'i am not a robot'
+                    ) {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                            return { el, rect, type: 'text:' + txt };
+                        }
+                    }
+                }
+                return null;
+            }
+
+            const res = findDeepCheckbox(document);
+            if (!res) return null;
+
+            const el = res.el;
+            el.scrollIntoView({ block: 'center', inline: 'center' });
+            const r = el.getBoundingClientRect();
+
+            // 尝试触发点击
+            try { el.click(); } catch (e) {}
+            if (el.parentElement) {
+                try { el.parentElement.click(); } catch (e) {}
+            }
+
+            // 如果命中整行或文字，左侧为复选框位置；如果命中复选框本身，取中心点
+            let clickX = r.left + r.width / 2;
+            let clickY = r.top + r.height / 2;
+            if (res.type.startsWith('text:') && r.width > 80) {
+                clickX = Math.max(10, r.left - 22);
+            } else if (r.width > 120) {
+                clickX = r.left + 28;
+            }
+
+            return {
+                type: res.type,
+                x: clickX,
+                y: clickY,
+                w: r.width,
+                h: r.height
+            };
+        ''')
+
+        if info:
+            print(f"{label} 定位成功 ({info.get('type')})，执行点击...")
+            cdp_mouse_click(sb, info["x"], info["y"])
+            clicked = True
+            break
+
+        sb.sleep(0.5)
+
+    if not clicked:
+        print(f"{label} 未找到复选框")
+        return False
+
+    sb.sleep(1.5)
+    save_debug_screenshot(sb, "02b_after_checkbox.png")
+
+    # 等待验证状态完成或弹窗自动关闭（最长 18 秒）
+    wait_start = time.time()
+    while time.time() - wait_start < 18:
+        status = sb.execute_script('''
+            const bodyText = (document.body.innerText || '').toLowerCase();
+            const modalVisible = (
+                bodyText.includes('confirmation anti-robot') ||
+                bodyText.includes('confirmez que vous êtes humain') ||
+                bodyText.includes('anti-bot confirmation')
+            );
+
+            // 检查复选框是否已通过
+            let isChecked = false;
+            function checkVerified(root) {
+                const els = root.querySelectorAll('[aria-checked="true"], input[type="checkbox"]:checked, [data-state="verified"], .verified, .success');
+                if (els.length > 0) return true;
+                for (const el of root.querySelectorAll('*')) {
+                    if (el.shadowRoot && checkVerified(el.shadowRoot)) return true;
+                }
+                return false;
+            }
+            isChecked = checkVerified(document);
+
+            // 如果弹窗内有除 Annuler/Cancel 之外的确认按钮，顺手点击
+            if (modalVisible) {
+                const btns = document.querySelectorAll('button');
+                for (const b of btns) {
+                    const t = (b.innerText || '').trim().toLowerCase();
+                    if (t && (t === 'confirmer' || t === 'confirm' || t === 'valider' || t === 'continuer')) {
+                        b.click();
+                    }
+                }
+            }
+
+            return { modalVisible, isChecked };
+        ''')
+
+        if status:
+            if not status.get("modalVisible"):
+                print(f"{label} 验证弹窗已自动关闭，验证完成")
+                return True
+            if status.get("isChecked") and (time.time() - wait_start > 3):
+                print(f"{label} 复选框已勾选通过")
+                return True
+
+        sb.sleep(0.8)
+
+    print(f"{label} 点击已完成（等待超时后继续）")
+    return True
 
 
 # ===================== 登录相关 =====================
@@ -393,7 +573,6 @@ def login_by_cookie(sb, cookie_raw):
             print("未解析出任何有效 Cookie 项")
             return False
 
-        # 先清空浏览器已有 Cookie
         try:
             exec_cdp(sb, "Network.clearBrowserCookies", {})
         except Exception:
@@ -417,7 +596,6 @@ def login_by_cookie(sb, cookie_raw):
 
             for h in hosts:
                 try:
-                    # 关键点：__Host- 前缀或 hostOnly=True 的 Cookie 不能传 domain 字段，只能传 url
                     if name.startswith("__Host-") or host_only:
                         params = {
                             "name": name,
@@ -445,7 +623,6 @@ def login_by_cookie(sb, cookie_raw):
 
         print(f"CDP 成功写入 {injected_count} 条域名 Cookie 记录，正在验证登录态...")
 
-        # 直接使用 sb.open 打开 dashboard，绝不使用会断开 chromedriver 的 uc_open_with_reconnect
         for test_url in [f"{BASE_URL}/dashboard", f"{DASH_URL}/dashboard"]:
             sb.open(test_url)
             sb.wait_for_ready_state_complete()
@@ -494,163 +671,6 @@ def fill_input(sb, selector, value, label, timeout=10):
         return False
 
 
-def click_captcha_checkbox(sb, label='验证码', timeout=6):
-    ensure_connected(sb)
-    selectors = [
-        'div.auth-captcha-inner[role="checkbox"]',
-        'div.auth-captcha-checkbox',
-        '//*[@role="checkbox"]',
-        '//div[contains(., "Je ne suis pas un robot")]//*[@role="checkbox"]',
-        '//div[contains(., "I am not a robot")]//*[@role="checkbox"]',
-    ]
-    clicked = False
-    for sel in selectors:
-        try:
-            if not sb.is_element_visible(sel):
-                continue
-            scroll_to_selector(sb, sel)
-            try:
-                sb.click(sel)
-                clicked = True
-            except Exception:
-                # 退回使用 WebElement + JS 点击
-                by = By.XPATH if sel.startswith('/') else By.CSS_SELECTOR
-                el = sb.driver.find_element(by, sel)
-                clicked = safe_click_element(sb, el, label)
-            if clicked:
-                sb.sleep(1.5)
-                print(f"{label} 已点击复选框 ({sel})")
-                break
-        except Exception:
-            continue
-
-    if not clicked:
-        print(f"{label} 点击复选框失败")
-        return False
-    sb.sleep(3)
-    return handle_captcha_challenge(sb, label, timeout=20)
-
-
-def handle_captcha_challenge(sb, label='验证码', timeout=20):
-    ensure_connected(sb)
-    start = time.time()
-    challenge_selectors = [
-        '.auth-captcha-challenge',
-        '//*[contains(@class, "captcha") and contains(@class, "challenge")]',
-        '//*[contains(@aria-label, "Click on ") or contains(@aria-label, "Select ")]',
-    ]
-
-    def get_challenge():
-        for sel in challenge_selectors:
-            try:
-                if sel.startswith('/'):
-                    for el in sb.driver.find_elements(By.XPATH, sel):
-                        if el.is_displayed():
-                            return el
-                else:
-                    for el in sb.driver.find_elements(By.CSS_SELECTOR, sel):
-                        if el.is_displayed():
-                            return el
-            except Exception:
-                continue
-        return None
-
-    challenge = None
-    while time.time() - start < 8:
-        challenge = get_challenge()
-        if challenge:
-            print(f"{label} 检测到图形验证码挑战")
-            break
-        try:
-            cb = sb.driver.find_element(By.CSS_SELECTOR, 'div.auth-captcha-inner[role="checkbox"]')
-            if cb.get_attribute('aria-checked') == 'true':
-                print(f"{label} 验证已通过")
-                return True
-        except Exception:
-            pass
-        sb.sleep(0.4)
-
-    if not challenge:
-        return True
-
-    target = ''
-    try:
-        prompt = challenge.find_element(By.CSS_SELECTOR, '.auth-captcha-prompt strong')
-        target = prompt.text.strip()
-    except Exception:
-        pass
-    if not target:
-        aria = challenge.get_attribute('aria-label') or ''
-        if 'Click on ' in aria:
-            target = aria.split('Click on ')[-1].strip()
-    print(f"{label} 目标文本: {target or '未识别'}")
-
-    def get_options(ch):
-        for sel in ['button.auth-captcha-option', '.auth-captcha-option', 'button']:
-            try:
-                opts = ch.find_elements(By.CSS_SELECTOR, sel)
-                visible = [o for o in opts if o.is_displayed()]
-                if visible:
-                    return visible
-            except Exception:
-                continue
-        return []
-
-    for attempt in range(8):
-        challenge = get_challenge()
-        if not challenge:
-            print(f"{label} 挑战已消失，验证完成")
-            return True
-        options = get_options(challenge)
-        if not options:
-            sb.sleep(0.8)
-            continue
-
-        candidate = None
-        if target:
-            for opt in options:
-                txt = (opt.text or '').strip().lower()
-                if target.lower() in txt:
-                    candidate = opt
-                    break
-        if not candidate and options:
-            candidate = options[0]
-
-        print(f"{label} 点击选项 #{attempt+1} (目标: {target}) ...")
-        if target:
-            js_result = sb.execute_script('''
-                const target = (arguments[0] || "").toLowerCase();
-                const buttons = document.querySelectorAll("button.auth-captcha-option, .auth-captcha-option");
-                for (const btn of buttons) {
-                    const text = (btn.innerText || btn.textContent || "").trim().toLowerCase();
-                    if (text && (text === target || text.includes(target) || target.includes(text))) {
-                        btn.scrollIntoView({block: "center"});
-                        btn.click();
-                        return "clicked:" + text;
-                    }
-                }
-                return "not-found:" + buttons.length;
-            ''', target)
-            print(f"{label} JS匹配结果: {js_result}")
-            if not str(js_result).startswith("clicked:") and candidate:
-                safe_click_element(sb, candidate, label)
-        elif candidate:
-            safe_click_element(sb, candidate, label)
-        sb.sleep(2)
-
-        try:
-            cb = sb.driver.find_element(By.CSS_SELECTOR, 'div.auth-captcha-inner[role="checkbox"]')
-            if cb.get_attribute('aria-checked') == 'true':
-                print(f"{label} 验证通过")
-                return True
-        except Exception:
-            pass
-        if not get_challenge():
-            return True
-    print(f"{label} 验证失败")
-    return False
-
-
 def login(sb, email, password):
     print("开始密码登录流程...")
     ensure_connected(sb)
@@ -663,7 +683,7 @@ def login(sb, email, password):
             if fill_input(sb, sel, password, '密码'):
                 break
 
-    captcha_ok = click_captcha_checkbox(sb, '登录验证码')
+    captcha_ok = click_captcha_checkbox(sb, '登录验证码', timeout=8)
     if not captcha_ok:
         print("⚠️ 登录验证码未完成，仍尝试点击登录按钮")
 
@@ -736,7 +756,7 @@ def find_renew_buttons(sb):
             if not btn.is_displayed():
                 continue
             txt = element_text(btn).lower()
-            if txt in ('renew', 'renouveler') or txt.startswith('renew') or txt.startswith('renouveler'):
+            if 'renew' in txt or 'renouveler' in txt:
                 visible.append(btn)
         except Exception:
             continue
@@ -766,7 +786,8 @@ def is_valid_service_page(body):
     low = body.lower()
     return any(k in low for k in [
         "time remaining", "temps restant", "expires in",
-        "start", "restart", "stop", "free plan", "online", "offline"
+        "start", "restart", "stop", "free plan", "online", "offline",
+        "en ligne", "démarrer", "redémarrer", "arrêter", "offre gratuite", "renouveler"
     ])
 
 
@@ -780,7 +801,8 @@ def open_dashboard_session(sb):
             sb.sleep(4)
             body = page_body(sb)
             print(f"Dashboard URL: {sb.get_current_url()}")
-            if not is_error_page(body) and ("welcome" in body.lower() or "dashboard" in body.lower() or "my services" in body.lower()):
+            low = body.lower()
+            if not is_error_page(body) and any(k in low for k in ["welcome", "dashboard", "my services", "accueil", "applications", "mes services"]):
                 return True
         except Exception as e:
             print(f"打开 Dashboard 失败: {e}")
@@ -817,8 +839,19 @@ def find_server_links(sb):
 
 
 def open_service_page(sb, server_url):
-    open_dashboard_session(sb)
+    ensure_connected(sb)
+    # 1. 优先尝试直接打开目标服务页
+    if server_url:
+        print(f"直接打开服务页: {server_url}")
+        sb.open(server_url)
+        sb.wait_for_ready_state_complete()
+        sb.sleep(5)
+        body = page_body(sb)
+        if is_valid_service_page(body):
+            return True, body
 
+    # 2. 若直接打开异常，回退通过 Dashboard 点击进入
+    open_dashboard_session(sb)
     if click_dashboard_service(sb, server_url):
         return True, page_body(sb)
 
@@ -834,20 +867,8 @@ def open_service_page(sb, server_url):
         if safe_click_element(sb, link, "服务链接"):
             sb.sleep(5)
             body = page_body(sb)
-            print(f"进入后URL: {sb.get_current_url()}")
-            print(body[:400])
             if is_valid_service_page(body):
                 return True, body
-
-    if server_url:
-        print(f"最后尝试直接打开: {server_url}")
-        sb.open(server_url)
-        sb.wait_for_ready_state_complete()
-        sb.sleep(5)
-        body = page_body(sb)
-        print(body[:400])
-        if is_valid_service_page(body):
-            return True, body
 
     return False, page_body(sb)
 
@@ -856,37 +877,21 @@ def read_service_info(sb):
     ensure_connected(sb)
     body = page_body(sb)
     remaining = "未知"
-    try:
-        els = sb.driver.find_elements(
-            By.XPATH,
-            '//*[contains(text(), "Time remaining") or contains(text(), "Temps restant") or contains(text(), "Expires in")]'
-        )
-        for el in els:
-            txt = element_text(el)
-            m = re.search(r'(?:Time remaining|Temps restant|Expires in)\s*:?\s*([0-9]+\s*[djh][^\n]*)', txt, re.I)
-            if m:
-                remaining = m.group(1).strip()
-                break
-    except Exception:
-        pass
-
-    if remaining == "未知":
-        for p in [
-            r'Time remaining\s*:?\s*([0-9]+\s*[djh][^\n]*)',
-            r'Temps restant\s*:?\s*([0-9]+\s*[djh][^\n]*)',
-            r'Expires in\s*:?\s*([0-9]+\s*[djh][^\n]*)',
-        ]:
-            m = re.search(p, body, re.I)
-            if m:
-                remaining = m.group(1).strip()
-                break
+    patterns = [
+        r'(?:Time remaining|Temps restant|Expires in)\s*:?\s*([0-9]+\s*(?:d|j|h|m|min|s)[^\n]*)',
+    ]
+    for p in patterns:
+        m = re.search(p, body, re.I)
+        if m:
+            remaining = m.group(1).strip()
+            break
 
     name = "未知服务"
-    for sel in ['h1.server-name', '.server-name']:
+    for sel in ['h1.server-name', '.server-name', 'main h1', 'main h2', 'h1', 'h2']:
         try:
             for el in sb.driver.find_elements(By.CSS_SELECTOR, sel):
                 t = element_text(el)
-                if t and 1 <= len(t) <= 40:
+                if t and 1 <= len(t) <= 40 and not any(ignore in t.lower() for ignore in ['anti-robot', 'anti-bot', 'aclclouds', 'console']):
                     name = t
                     break
             if name != "未知服务":
@@ -897,31 +902,26 @@ def read_service_info(sb):
 
 
 def handle_renew_antibot(sb, project_name):
-    print(f"[{project_name}] 检查是否出现续期图形验证码...")
-    sb.sleep(2.5)
-    has_captcha = False
-    check_selectors = [
-        'div.auth-captcha-inner[role="checkbox"]',
-        '//div[contains(., "Je ne suis pas un robot")]',
-        '//div[contains(., "I am not a robot")]',
-        '//div[contains(., "Anti-bot confirmation")]',
-        '//div[contains(., "Confirm you are human")]',
-        '.auth-captcha-challenge',
-    ]
-    for sel in check_selectors:
-        try:
-            if sb.is_element_visible(sel):
-                has_captcha = True
-                break
-        except Exception:
-            continue
-    if not has_captcha:
-        print(f"[{project_name}] 未检测到验证码弹窗")
-        return False
-    print(f"[{project_name}] 开始执行完整图形验证码流程...")
-    success = click_captcha_checkbox(sb, label=f"续期验证码-{project_name}", timeout=8)
-    print(f"[{project_name}] 续期验证码{'通过' if success else '未通过'}")
+    print(f"[{project_name}] 检查是否出现 Confirmation anti-robot 验证框...")
     sb.sleep(2)
+    body_low = page_body(sb).lower()
+    has_modal = any(k in body_low for k in [
+        "confirmation anti-robot",
+        "confirmez que vous êtes humain",
+        "vérifier que vous êtes humain",
+        "verify you are human",
+        "anti-bot confirmation",
+        "confirm you are human",
+    ])
+    if not has_modal:
+        # 即使文本未直接体现在 body.text（例如在 Shadow DOM 内），也尝试检测一次复选框
+        print(f"[{project_name}] 尝试检测验证复选框...")
+    else:
+        print(f"[{project_name}] 检测到人机验证弹窗，开始点击验证框...")
+
+    success = click_captcha_checkbox(sb, label=f"续期验证框-{project_name}", timeout=10)
+    print(f"[{project_name}] 续期验证框处理{'完成' if success else '未命中'}")
+    sb.sleep(3)
     return success
 
 
@@ -981,8 +981,10 @@ def process_account(sb, account):
     print(f"服务名: {service_name}")
     print(f"剩余时间: {remaining}")
 
+    save_debug_screenshot(sb, "01_before_click.png")
+
     if is_error_page(body) or not opened:
-        print("服务页异常，回退到 Dashboard Upcoming renewals")
+        print("服务页异常，回退到 Dashboard 查找 Renew 按钮")
         open_dashboard_session(sb)
         renew_btns = find_renew_buttons(sb)
         service_name, remaining, body = read_service_info(sb)
@@ -991,24 +993,33 @@ def process_account(sb, account):
         clicked = safe_click_element(sb, renew_btns[0], f"{service_name} Renew")
         if not clicked:
             return service_name, email, cookie_status, f"❌ 点击 Renew 失败\n剩余时间: {remaining}"
+        save_debug_screenshot(sb, "02_after_click.png")
         handle_renew_antibot(sb, service_name)
         return service_name, email, cookie_status, f"✅ 已在 Dashboard 点击 Renew\n原剩余: {remaining}"
 
     renew_btns = find_renew_buttons(sb)
     if not renew_btns:
         result_text = f"⏳ 未到续期时间\n剩余时间: {remaining}"
-        print(f"[{service_name}] 没有 Renew 按钮，跳过")
+        print(f"[{service_name}] 没有 Renew/Renouveler 按钮，跳过")
         return service_name, email, cookie_status, result_text
 
-    print(f"[{service_name}] 发现 Renew 按钮，开始续期")
+    print(f"[{service_name}] 发现 Renouveler/Renew 按钮，开始续期")
     clicked = safe_click_element(sb, renew_btns[0], f"{service_name} Renew")
     if not clicked:
         return service_name, email, cookie_status, f"❌ 点击 Renew 失败\n剩余时间: {remaining}"
 
+    sb.sleep(1.5)
+    save_debug_screenshot(sb, "02_after_click.png")
+
+    # 处理 Confirmation anti-robot 复选框弹窗
     handle_renew_antibot(sb, service_name)
+
     sb.sleep(3)
     sb.refresh()
+    sb.wait_for_ready_state_complete()
     sb.sleep(4)
+    save_debug_screenshot(sb, "03_after_refresh.png")
+
     new_name, new_remaining, _ = read_service_info(sb)
     if new_name and new_name != "未知服务":
         service_name = new_name
@@ -1026,7 +1037,7 @@ def main():
     PROXY_SERVER = os.getenv('S5_PROXY') or os.getenv('PROXY_SERVER') or "socks5://127.0.0.1:1080"
 
     print("=" * 50)
-    print("ACLClouds 自动续期启动（支持 JSON Cookie 登录）")
+    print("ACLClouds 自动续期启动（JSON Cookie + 纯复选框验证）")
     print("运行时间:", beijing_time_str())
     print("=" * 50)
     print("环境变量检查（只显示有/无，不打印内容）:")
