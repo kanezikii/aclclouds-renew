@@ -80,14 +80,30 @@ def env_flag(name):
     return "有" if val else "无"
 
 
+# ===================== WebDriver 连接保护与 CDP 封装 =====================
+def ensure_connected(sb):
+    """确保 UC 模式下 chromedriver 处于连接状态，防止 Connection refused"""
+    try:
+        if hasattr(sb, "is_connected") and not sb.is_connected():
+            sb.connect()
+    except Exception:
+        pass
+
+
+def exec_cdp(sb, cmd, params=None):
+    """兼容不同版本 SeleniumBase 的 CDP 调用方式"""
+    ensure_connected(sb)
+    if params is None:
+        params = {}
+    if hasattr(sb, "driver") and hasattr(sb.driver, "execute_cdp_cmd"):
+        return sb.driver.execute_cdp_cmd(cmd, params)
+    return sb.execute_cdp_cmd(cmd, params)
+
+
 # ===================== Cookie 相关 (支持插件 JSON 与传统字符串) =====================
 def parse_cookie_input(cookie_raw):
     """
-    解析 Cookie 输入，优先支持浏览器插件导出的 JSON 格式：
-    - JSON 数组: [{"name": "xxx", "value": "yyy", "domain": "..."}, ...]
-    - JSON 字典: {"cookies": [...]} 或 {"name": "value", ...}
-    - 传统分号分隔字符串: "name1=val1; name2=val2"
-    统一返回标准字典列表: [{"name": ..., "value": ..., "domain": ..., ...}, ...]
+    解析浏览器插件导出的 JSON 格式 Cookie 或传统分号分隔字符串
     """
     if not cookie_raw or not cookie_raw.strip():
         return []
@@ -101,7 +117,15 @@ def parse_cookie_input(cookie_raw):
                 if "cookies" in data and isinstance(data["cookies"], list):
                     data = data["cookies"]
                 else:
-                    return [{"name": str(k), "value": str(v)} for k, v in data.items() if k and v is not None]
+                    return [{
+                        "name": str(k).strip(),
+                        "value": str(v).strip(),
+                        "domain": "aclclouds.com",
+                        "hostOnly": True,
+                        "path": "/",
+                        "secure": True,
+                        "httpOnly": False,
+                    } for k, v in data.items() if k and v is not None]
 
             if isinstance(data, list):
                 cookie_list = []
@@ -111,11 +135,17 @@ def parse_cookie_input(cookie_raw):
                     name = item.get("name")
                     value = item.get("value")
                     if name and value is not None:
+                        domain = str(item.get("domain") or "aclclouds.com").strip()
+                        # 插件导出的 hostOnly 若未指定，则根据 domain 是否以 "." 开头判断
+                        host_only = item.get("hostOnly")
+                        if host_only is None:
+                            host_only = not domain.startswith(".")
                         cookie_list.append({
                             "name": str(name).strip(),
                             "value": str(value).strip(),
-                            "domain": item.get("domain", ""),
-                            "path": item.get("path", "/"),
+                            "domain": domain,
+                            "hostOnly": bool(host_only),
+                            "path": str(item.get("path") or "/"),
                             "secure": bool(item.get("secure", True)),
                             "httpOnly": bool(item.get("httpOnly", False)),
                         })
@@ -134,17 +164,18 @@ def parse_cookie_input(cookie_raw):
         cookie_list.append({
             "name": name.strip(),
             "value": value.strip(),
-            "domain": "",
+            "domain": "aclclouds.com",
+            "hostOnly": True,
             "path": "/",
             "secure": True,
-            "httpOnly": False
+            "httpOnly": False,
         })
     print(f"成功以字符串格式解析出 {len(cookie_list)} 个 Cookie")
     return cookie_list
 
 
 def extract_acl_cookie_json(sb):
-    """提取最新有效 Cookie 并输出为 JSON 字符串，方便与插件格式保持一致"""
+    """提取最新有效 Cookie 并输出为与插件兼容的 JSON 字符串"""
     keep_names = (
         "XSRF-TOKEN",
         "__Host-aclclouds_session",
@@ -164,15 +195,19 @@ def extract_acl_cookie_json(sb):
         )
 
     try:
-        result = sb.execute_cdp_cmd("Network.getAllCookies", {})
+        result = exec_cdp(sb, "Network.getAllCookies", {})
         cookies = result.get("cookies", [])
         keep = []
         for c in cookies:
             if should_keep(c):
+                domain = c.get("domain", "aclclouds.com")
+                name = c.get("name", "")
+                host_only = name.startswith("__Host-") or (not domain.startswith("."))
                 keep.append({
-                    "name": c.get("name", ""),
+                    "name": name,
                     "value": c.get("value", ""),
-                    "domain": c.get("domain", "aclclouds.com"),
+                    "domain": domain.lstrip(".") if host_only else domain,
+                    "hostOnly": host_only,
                     "path": c.get("path", "/"),
                     "secure": c.get("secure", True),
                     "httpOnly": c.get("httpOnly", False),
@@ -183,14 +218,19 @@ def extract_acl_cookie_json(sb):
         print(f"CDP获取Cookie失败: {e}")
 
     try:
+        ensure_connected(sb)
         cookies = sb.driver.get_cookies()
         keep = []
         for c in cookies:
             if should_keep(c):
+                domain = c.get("domain", "aclclouds.com")
+                name = c.get("name", "")
+                host_only = name.startswith("__Host-") or (not domain.startswith("."))
                 keep.append({
-                    "name": c.get("name", ""),
+                    "name": name,
                     "value": c.get("value", ""),
-                    "domain": c.get("domain", "aclclouds.com"),
+                    "domain": domain.lstrip(".") if host_only else domain,
+                    "hostOnly": host_only,
                     "path": c.get("path", "/"),
                     "secure": c.get("secure", True),
                     "httpOnly": c.get("httpOnly", False),
@@ -263,6 +303,7 @@ def save_new_cookie(sb, secret_name):
 
 # ===================== 工具函数 =====================
 def is_logged_in(sb):
+    ensure_connected(sb)
     current_url = sb.get_current_url()
     return ('aclclouds.com' in current_url) and (LOGIN_PATH not in current_url)
 
@@ -270,6 +311,7 @@ def is_logged_in(sb):
 def wait_for_url_change(sb, original_url, timeout=30):
     start_time = time.time()
     while time.time() - start_time < timeout:
+        ensure_connected(sb)
         if sb.get_current_url() != original_url:
             return True
         sb.sleep(0.5)
@@ -285,6 +327,7 @@ def scroll_to_selector(sb, selector):
 
 
 def safe_click_element(sb, element, label=""):
+    ensure_connected(sb)
     try:
         sb.driver.execute_script(
             'arguments[0].scrollIntoView({block: "center", inline: "center"});',
@@ -324,18 +367,15 @@ def unique_elements(elements):
 
 
 def reset_browser_session(sb):
-    """切换账号前清掉上一账号登录态。"""
+    """切换账号前清掉上一账号登录态（避免使用会断连的方法）。"""
+    ensure_connected(sb)
     try:
-        sb.execute_cdp_cmd("Network.clearBrowserCookies", {})
-    except Exception:
-        pass
-    try:
-        sb.driver.delete_all_cookies()
-    except Exception:
-        pass
+        exec_cdp(sb, "Network.clearBrowserCookies", {})
+    except Exception as e:
+        print(f"CDP 清理 Cookie 提示: {e}")
     try:
         sb.open("about:blank")
-        sb.sleep(1)
+        sb.sleep(0.5)
     except Exception:
         pass
 
@@ -347,71 +387,76 @@ def login_by_cookie(sb, cookie_raw):
         return False
     print("尝试 Cookie 登录...")
     try:
-        sb.uc_open_with_reconnect(LOGIN_URLS[0], reconnect_time=5)
-        sb.sleep(2)
-        sb.driver.delete_all_cookies()
-        sb.sleep(1)
-
+        ensure_connected(sb)
         cookie_list = parse_cookie_input(cookie_raw)
         if not cookie_list:
             print("未解析出任何有效 Cookie 项")
             return False
 
-        default_domains = ["aclclouds.com", "dash.aclclouds.com"]
+        # 先清空浏览器已有 Cookie
+        try:
+            exec_cdp(sb, "Network.clearBrowserCookies", {})
+        except Exception:
+            pass
+
+        default_hosts = ["aclclouds.com", "dash.aclclouds.com"]
+        injected_count = 0
 
         for item in cookie_list:
             name = item["name"]
             value = item["value"]
-            raw_domain = (item.get("domain") or "").strip()
+            raw_domain = (item.get("domain") or "aclclouds.com").strip()
+            host_only = item.get("hostOnly", True)
             path = item.get("path") or "/"
             secure = item.get("secure", True)
             http_only = item.get("httpOnly", False)
 
-            # 如果插件 JSON 自带了明确的 domain，同时兼顾主域名与 dash 域名
-            target_domains = set(default_domains)
+            hosts = set(default_hosts)
             if raw_domain:
-                target_domains.add(raw_domain)
-                target_domains.add(raw_domain.lstrip("."))
+                hosts.add(raw_domain.lstrip("."))
 
-            for d in target_domains:
-                clean_host = d.lstrip(".")
+            for h in hosts:
                 try:
-                    # __Host- 前缀 Cookie 严禁携带 domain 属性，且必须指定 url 及 secure=True, path="/"
-                    if name.startswith("__Host-"):
+                    # 关键点：__Host- 前缀或 hostOnly=True 的 Cookie 不能传 domain 字段，只能传 url
+                    if name.startswith("__Host-") or host_only:
                         params = {
                             "name": name,
                             "value": value,
-                            "url": f"https://{clean_host}/",
-                            "path": "/",
-                            "secure": True,
+                            "url": f"https://{h}/",
+                            "path": "/" if name.startswith("__Host-") else path,
+                            "secure": True if name.startswith("__Host-") else secure,
                             "httpOnly": http_only,
                         }
                     else:
                         params = {
                             "name": name,
                             "value": value,
-                            "url": f"https://{clean_host}/",
-                            "domain": d,
+                            "url": f"https://{h}/",
+                            "domain": f".{h}",
                             "path": path,
                             "secure": secure,
                             "httpOnly": http_only,
                         }
-                    sb.execute_cdp_cmd("Network.setCookie", params)
+                    res = exec_cdp(sb, "Network.setCookie", params)
+                    if res and res.get("success"):
+                        injected_count += 1
                 except Exception as e:
-                    print(f"CDP写入失败 {name}@{d}: {e}")
+                    print(f"CDP写入失败 {name}@{h}: {e}")
 
-        print(f"已完成 {len(cookie_list)} 项 Cookie 的注入，正在验证登录态...")
-        sb.open(f"{BASE_URL}/dashboard")
-        sb.sleep(6)
-        if is_logged_in(sb) and LOGIN_PATH not in sb.get_current_url():
-            print("✅ Cookie 登录成功")
-            return True
-        sb.refresh()
-        sb.sleep(4)
-        if is_logged_in(sb) and LOGIN_PATH not in sb.get_current_url():
-            print("✅ Cookie 登录成功（刷新后）")
-            return True
-        print("Cookie 登录失败（可能已过期或失效）")
+        print(f"CDP 成功写入 {injected_count} 条域名 Cookie 记录，正在验证登录态...")
+
+        # 直接使用 sb.open 打开 dashboard，绝不使用会断开 chromedriver 的 uc_open_with_reconnect
+        for test_url in [f"{BASE_URL}/dashboard", f"{DASH_URL}/dashboard"]:
+            sb.open(test_url)
+            sb.wait_for_ready_state_complete()
+            sb.sleep(5)
+            cur_url = sb.get_current_url()
+            print(f"验证后当前 URL: {cur_url}")
+            if is_logged_in(sb) and LOGIN_PATH not in cur_url:
+                print("✅ Cookie 登录成功")
+                return True
+
+        print("Cookie 登录失败（可能 Cookie 已过期）")
         return False
     except Exception as e:
         print(f"Cookie 登录异常: {e}")
@@ -419,6 +464,7 @@ def login_by_cookie(sb, cookie_raw):
 
 
 def js_set_input_value(sb, selector, value):
+    ensure_connected(sb)
     sb.execute_script('''
         const el = document.querySelector(arguments[0]);
         if (!el) return false;
@@ -431,7 +477,8 @@ def js_set_input_value(sb, selector, value):
     ''', selector, value)
 
 
-def fill_input(sb, selector, value, label, timeout=15):
+def fill_input(sb, selector, value, label, timeout=10):
+    ensure_connected(sb)
     try:
         sb.wait_for_element_visible(selector, timeout=timeout)
         scroll_to_selector(sb, selector)
@@ -443,30 +490,40 @@ def fill_input(sb, selector, value, label, timeout=15):
             js_set_input_value(sb, selector, value)
         return True
     except Exception as e:
-        print(f"填写{label}失败: {e}")
+        print(f"填写{label} ({selector}) 未匹配: {e}")
         return False
 
 
-def click_captcha_checkbox(sb, label='验证码', timeout=10):
+def click_captcha_checkbox(sb, label='验证码', timeout=6):
+    ensure_connected(sb)
     selectors = [
         'div.auth-captcha-inner[role="checkbox"]',
+        'div.auth-captcha-checkbox',
+        '//*[@role="checkbox"]',
         '//div[contains(., "Je ne suis pas un robot")]//*[@role="checkbox"]',
         '//div[contains(., "I am not a robot")]//*[@role="checkbox"]',
-        '//div[contains(., "Anti-bot")]//*[@role="checkbox"]',
-        'div.auth-captcha-checkbox',
     ]
     clicked = False
     for sel in selectors:
         try:
-            sb.wait_for_element_visible(sel, timeout=timeout)
+            if not sb.is_element_visible(sel):
+                continue
             scroll_to_selector(sb, sel)
-            sb.uc_click(sel)
-            sb.sleep(1.5)
-            clicked = True
-            print(f"{label} 已点击复选框")
-            break
+            try:
+                sb.click(sel)
+                clicked = True
+            except Exception:
+                # 退回使用 WebElement + JS 点击
+                by = By.XPATH if sel.startswith('/') else By.CSS_SELECTOR
+                el = sb.driver.find_element(by, sel)
+                clicked = safe_click_element(sb, el, label)
+            if clicked:
+                sb.sleep(1.5)
+                print(f"{label} 已点击复选框 ({sel})")
+                break
         except Exception:
             continue
+
     if not clicked:
         print(f"{label} 点击复选框失败")
         return False
@@ -475,6 +532,7 @@ def click_captcha_checkbox(sb, label='验证码', timeout=10):
 
 
 def handle_captcha_challenge(sb, label='验证码', timeout=20):
+    ensure_connected(sb)
     start = time.time()
     challenge_selectors = [
         '.auth-captcha-challenge',
@@ -595,6 +653,7 @@ def handle_captcha_challenge(sb, label='验证码', timeout=20):
 
 def login(sb, email, password):
     print("开始密码登录流程...")
+    ensure_connected(sb)
     if not fill_input(sb, '#username', email, '邮箱'):
         for sel in ['input[name="email"]', 'input[type="email"]', 'input[placeholder*="Email"]']:
             if fill_input(sb, sel, email, '邮箱'):
@@ -658,6 +717,7 @@ def login(sb, email, password):
 
 # ===================== 服务页读取与续期 =====================
 def find_renew_buttons(sb):
+    ensure_connected(sb)
     xpaths = [
         '//button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renew")]',
         '//button[contains(translate(normalize-space(.), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "renouveler")]',
@@ -684,6 +744,7 @@ def find_renew_buttons(sb):
 
 
 def page_body(sb):
+    ensure_connected(sb)
     try:
         return sb.driver.find_element(By.TAG_NAME, 'body').text
     except Exception:
@@ -710,6 +771,7 @@ def is_valid_service_page(body):
 
 
 def open_dashboard_session(sb):
+    ensure_connected(sb)
     for url in [f"{BASE_URL}/dashboard", f"{DASH_URL}/dashboard"]:
         try:
             print(f"打开 Dashboard: {url}")
@@ -726,6 +788,7 @@ def open_dashboard_session(sb):
 
 
 def click_dashboard_service(sb, server_url):
+    ensure_connected(sb)
     sid = ""
     m = re.search(r"/server/([A-Za-z0-9_-]+)", server_url or "")
     if m:
@@ -746,6 +809,7 @@ def click_dashboard_service(sb, server_url):
 
 
 def find_server_links(sb):
+    ensure_connected(sb)
     try:
         return unique_elements(sb.driver.find_elements(By.XPATH, '//a[contains(@href, "/server/")]'))
     except Exception:
@@ -789,6 +853,7 @@ def open_service_page(sb, server_url):
 
 
 def read_service_info(sb):
+    ensure_connected(sb)
     body = page_body(sb)
     remaining = "未知"
     try:
@@ -854,7 +919,7 @@ def handle_renew_antibot(sb, project_name):
         print(f"[{project_name}] 未检测到验证码弹窗")
         return False
     print(f"[{project_name}] 开始执行完整图形验证码流程...")
-    success = click_captcha_checkbox(sb, label=f"续期验证码-{project_name}", timeout=12)
+    success = click_captcha_checkbox(sb, label=f"续期验证码-{project_name}", timeout=8)
     print(f"[{project_name}] 续期验证码{'通过' if success else '未通过'}")
     sb.sleep(2)
     return success
@@ -893,6 +958,7 @@ def process_account(sb, account):
             return service_name, email, cookie_status, msg
         for login_url in LOGIN_URLS:
             print(f"尝试密码登录页面: {login_url}")
+            ensure_connected(sb)
             sb.open(login_url)
             sb.wait_for_ready_state_complete()
             time.sleep(2)
