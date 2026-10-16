@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import os
 import re
+import json
 import time
 import base64
 import requests
@@ -79,46 +80,105 @@ def env_flag(name):
     return "有" if val else "无"
 
 
-# ===================== Cookie 相关 =====================
-def parse_cookie_string(cookie_string):
-    cookies = {}
-    if not cookie_string:
-        return cookies
-    for item in cookie_string.split(";"):
+# ===================== Cookie 相关 (支持插件 JSON 与传统字符串) =====================
+def parse_cookie_input(cookie_raw):
+    """
+    解析 Cookie 输入，优先支持浏览器插件导出的 JSON 格式：
+    - JSON 数组: [{"name": "xxx", "value": "yyy", "domain": "..."}, ...]
+    - JSON 字典: {"cookies": [...]} 或 {"name": "value", ...}
+    - 传统分号分隔字符串: "name1=val1; name2=val2"
+    统一返回标准字典列表: [{"name": ..., "value": ..., "domain": ..., ...}, ...]
+    """
+    if not cookie_raw or not cookie_raw.strip():
+        return []
+    raw = cookie_raw.strip()
+
+    # 1. 尝试按 JSON 解析
+    if (raw.startswith("[") and raw.endswith("]")) or (raw.startswith("{") and raw.endswith("}")):
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                if "cookies" in data and isinstance(data["cookies"], list):
+                    data = data["cookies"]
+                else:
+                    return [{"name": str(k), "value": str(v)} for k, v in data.items() if k and v is not None]
+
+            if isinstance(data, list):
+                cookie_list = []
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    name = item.get("name")
+                    value = item.get("value")
+                    if name and value is not None:
+                        cookie_list.append({
+                            "name": str(name).strip(),
+                            "value": str(value).strip(),
+                            "domain": item.get("domain", ""),
+                            "path": item.get("path", "/"),
+                            "secure": bool(item.get("secure", True)),
+                            "httpOnly": bool(item.get("httpOnly", False)),
+                        })
+                print(f"成功以 JSON 格式解析出 {len(cookie_list)} 个 Cookie")
+                return cookie_list
+        except Exception as e:
+            print(f"JSON 格式解析失败，回退为传统字符串解析: {e}")
+
+    # 2. 回退为传统 key=value; 字符串解析
+    cookie_list = []
+    for item in raw.split(";"):
         item = item.strip()
         if "=" not in item:
             continue
         name, value = item.split("=", 1)
-        cookies[name.strip()] = value.strip()
-    return cookies
+        cookie_list.append({
+            "name": name.strip(),
+            "value": value.strip(),
+            "domain": "",
+            "path": "/",
+            "secure": True,
+            "httpOnly": False
+        })
+    print(f"成功以字符串格式解析出 {len(cookie_list)} 个 Cookie")
+    return cookie_list
 
 
-def build_cookie_string(cookies):
-    result = []
-    for cookie in cookies:
-        name = cookie.get("name")
-        value = cookie.get("value")
-        if name and value:
-            result.append(f"{name}={value}")
-    return "; ".join(result)
-
-
-def extract_acl_cookie(sb):
+def extract_acl_cookie_json(sb):
+    """提取最新有效 Cookie 并输出为 JSON 字符串，方便与插件格式保持一致"""
     keep_names = (
         "XSRF-TOKEN",
         "__Host-aclclouds_session",
         "aclclouds_session",
+        "cf_clearance",
     )
+
+    def should_keep(c):
+        name = c.get("name", "")
+        domain = c.get("domain", "")
+        if "aclclouds.com" in domain:
+            return True
+        return (
+            name in keep_names
+            or name.startswith("remember_web_")
+            or name.startswith("__Host-aclclouds")
+        )
+
     try:
         result = sb.execute_cdp_cmd("Network.getAllCookies", {})
         cookies = result.get("cookies", [])
         keep = []
         for c in cookies:
-            name = c.get("name", "")
-            if name in keep_names or name.startswith("remember_web_") or name.startswith("__Host-aclclouds"):
-                keep.append({"name": name, "value": c.get("value", "")})
+            if should_keep(c):
+                keep.append({
+                    "name": c.get("name", ""),
+                    "value": c.get("value", ""),
+                    "domain": c.get("domain", "aclclouds.com"),
+                    "path": c.get("path", "/"),
+                    "secure": c.get("secure", True),
+                    "httpOnly": c.get("httpOnly", False),
+                })
         if keep:
-            return build_cookie_string(keep)
+            return json.dumps(keep, ensure_ascii=False)
     except Exception as e:
         print(f"CDP获取Cookie失败: {e}")
 
@@ -126,13 +186,20 @@ def extract_acl_cookie(sb):
         cookies = sb.driver.get_cookies()
         keep = []
         for c in cookies:
-            name = c.get("name", "")
-            if name in keep_names or name.startswith("remember_web_") or name.startswith("__Host-aclclouds"):
-                keep.append(c)
-        return build_cookie_string(keep)
+            if should_keep(c):
+                keep.append({
+                    "name": c.get("name", ""),
+                    "value": c.get("value", ""),
+                    "domain": c.get("domain", "aclclouds.com"),
+                    "path": c.get("path", "/"),
+                    "secure": c.get("secure", True),
+                    "httpOnly": c.get("httpOnly", False),
+                })
+        if keep:
+            return json.dumps(keep, ensure_ascii=False)
     except Exception as e:
         print(f"driver.get_cookies失败: {e}")
-        return ""
+    return ""
 
 
 def github_encrypt_secret(public_key, secret_value):
@@ -172,7 +239,7 @@ def update_github_secret(secret_name, secret_value):
             timeout=15,
         )
         if result.status_code in [201, 204]:
-            print(f"✅ Github Secret [{secret_name}] 更新成功")
+            print(f"✅ Github Secret [{secret_name}] 更新成功 (JSON格式)")
             return True
         print(f"Github Secret 更新返回状态码: {result.status_code}")
     except Exception as e:
@@ -182,13 +249,13 @@ def update_github_secret(secret_name, secret_value):
 
 def save_new_cookie(sb, secret_name):
     try:
-        cookie = extract_acl_cookie(sb)
-        if not cookie:
+        cookie_json = extract_acl_cookie_json(sb)
+        if not cookie_json:
             print("⚠️ 未能提取到有效Cookie，跳过更新")
             return False
-        print("最新Cookie:")
-        print(cookie[:180] + "..." if len(cookie) > 180 else cookie)
-        return update_github_secret(secret_name, cookie)
+        print("提取到最新Cookie (JSON预览):")
+        print(cookie_json[:180] + "..." if len(cookie_json) > 180 else cookie_json)
+        return update_github_secret(secret_name, cookie_json)
     except Exception as e:
         print(f"保存Cookie时发生异常: {e}")
         return False
@@ -259,6 +326,10 @@ def unique_elements(elements):
 def reset_browser_session(sb):
     """切换账号前清掉上一账号登录态。"""
     try:
+        sb.execute_cdp_cmd("Network.clearBrowserCookies", {})
+    except Exception:
+        pass
+    try:
         sb.driver.delete_all_cookies()
     except Exception:
         pass
@@ -270,9 +341,9 @@ def reset_browser_session(sb):
 
 
 # ===================== 登录相关 =====================
-def login_by_cookie(sb, cookie_str):
-    if not cookie_str:
-        print("没有 Cookie，跳过 Cookie 登录")
+def login_by_cookie(sb, cookie_raw):
+    if not cookie_raw:
+        print("没有配置 Cookie，跳过 Cookie 登录")
         return False
     print("尝试 Cookie 登录...")
     try:
@@ -281,33 +352,55 @@ def login_by_cookie(sb, cookie_str):
         sb.driver.delete_all_cookies()
         sb.sleep(1)
 
-        cookies = parse_cookie_string(cookie_str)
-        print(f"准备写入 {len(cookies)} 个Cookie")
-        domains = ["aclclouds.com", "dash.aclclouds.com"]
-        for name, value in cookies.items():
-            for domain in domains:
+        cookie_list = parse_cookie_input(cookie_raw)
+        if not cookie_list:
+            print("未解析出任何有效 Cookie 项")
+            return False
+
+        default_domains = ["aclclouds.com", "dash.aclclouds.com"]
+
+        for item in cookie_list:
+            name = item["name"]
+            value = item["value"]
+            raw_domain = (item.get("domain") or "").strip()
+            path = item.get("path") or "/"
+            secure = item.get("secure", True)
+            http_only = item.get("httpOnly", False)
+
+            # 如果插件 JSON 自带了明确的 domain，同时兼顾主域名与 dash 域名
+            target_domains = set(default_domains)
+            if raw_domain:
+                target_domains.add(raw_domain)
+                target_domains.add(raw_domain.lstrip("."))
+
+            for d in target_domains:
+                clean_host = d.lstrip(".")
                 try:
+                    # __Host- 前缀 Cookie 严禁携带 domain 属性，且必须指定 url 及 secure=True, path="/"
                     if name.startswith("__Host-"):
                         params = {
                             "name": name,
                             "value": value,
-                            "url": f"https://{domain}/",
+                            "url": f"https://{clean_host}/",
                             "path": "/",
-                            "secure": True
+                            "secure": True,
+                            "httpOnly": http_only,
                         }
                     else:
                         params = {
                             "name": name,
                             "value": value,
-                            "domain": domain,
-                            "path": "/",
-                            "secure": True
+                            "url": f"https://{clean_host}/",
+                            "domain": d,
+                            "path": path,
+                            "secure": secure,
+                            "httpOnly": http_only,
                         }
                     sb.execute_cdp_cmd("Network.setCookie", params)
-                    print(f"写入Cookie (CDP): {name} @ {domain}")
                 except Exception as e:
-                    print(f"CDP写入失败 {name}@{domain}: {e}")
+                    print(f"CDP写入失败 {name}@{d}: {e}")
 
+        print(f"已完成 {len(cookie_list)} 项 Cookie 的注入，正在验证登录态...")
         sb.open(f"{BASE_URL}/dashboard")
         sb.sleep(6)
         if is_logged_in(sb) and LOGIN_PATH not in sb.get_current_url():
@@ -318,7 +411,7 @@ def login_by_cookie(sb, cookie_str):
         if is_logged_in(sb) and LOGIN_PATH not in sb.get_current_url():
             print("✅ Cookie 登录成功（刷新后）")
             return True
-        print("Cookie 登录失败")
+        print("Cookie 登录失败（可能已过期或失效）")
         return False
     except Exception as e:
         print(f"Cookie 登录异常: {e}")
@@ -795,7 +888,7 @@ def process_account(sb, account):
                 missing.append("EMAIL")
             if not password:
                 missing.append("PASSWORD")
-            msg = "❌ 登录失败（缺少: " + "/".join(missing) + "）"
+            msg = "❌ 登录失败（Cookie失效且未配置: " + "/".join(missing) + "）"
             print(msg)
             return service_name, email, cookie_status, msg
         for login_url in LOGIN_URLS:
@@ -867,7 +960,7 @@ def main():
     PROXY_SERVER = os.getenv('S5_PROXY') or os.getenv('PROXY_SERVER') or "socks5://127.0.0.1:1080"
 
     print("=" * 50)
-    print("ACLClouds 自动续期启动（按服务页）")
+    print("ACLClouds 自动续期启动（支持 JSON Cookie 登录）")
     print("运行时间:", beijing_time_str())
     print("=" * 50)
     print("环境变量检查（只显示有/无，不打印内容）:")
@@ -877,7 +970,7 @@ def main():
     accounts = []
     if os.getenv("EMAIL") or os.getenv("ACL_COOKIE") or os.getenv("PASSWORD"):
         accounts.append({
-            "email": os.getenv("EMAIL") or "",
+            "email": os.getenv("EMAIL") or "Account_1",
             "password": os.getenv("PASSWORD") or "",
             "cookie": os.getenv("ACL_COOKIE") or "",
             "secret_name": "ACL_COOKIE",
@@ -899,7 +992,7 @@ def main():
 
     print(f"共加载 {len(accounts)} 个服务")
     for i, acc in enumerate(accounts, 1):
-        print(f"服务{i} URL: {acc.get('server_url') or '(空)'} 邮箱: {mask_email(acc.get('email', ''))}")
+        print(f"服务{i} URL: {acc.get('server_url') or '(空)'} 账户标识: {mask_email(acc.get('email', ''))}")
 
     sb_options = {'uc': True, 'headless': False}
     if IS_PROXY:
