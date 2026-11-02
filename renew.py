@@ -26,8 +26,8 @@ LOGIN_URLS = [
     f'{BASE_URL}{LOGIN_PATH}',
     f'{DASH_URL}{LOGIN_PATH}',
 ]
-DEFAULT_SERVER_URL_1 = "https://aclclouds.com/server/ff26a127"
-DEFAULT_SERVER_URL_2 = "https://aclclouds.com/server/7dd74194"
+DEFAULT_SERVER_URL_1 = "https://aclclouds.com/server/d944ef80-363e-48e8-be18-5340d69ffaec"
+DEFAULT_SERVER_URL_2 = "https://aclclouds.com/server/a6f6f6e8-0c28-4cfa-99fd-1f0a5dc2d85e"
 
 
 def beijing_time_str():
